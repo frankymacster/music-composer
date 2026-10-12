@@ -34,7 +34,7 @@ function OutputSelect({ track }: { track: Track }) {
   return (
     <div className="output">
       <select value={value} onChange={(e) => onChange(e.target.value)} onClick={(e) => e.stopPropagation()}>
-        {drums ? (
+        {(drums || track.mode === 'code') && (
           <optgroup label="Drum kits">
             <option value="kit:">Default kit</option>
             {DRUM_BANKS.map((b) => (
@@ -43,7 +43,8 @@ function OutputSelect({ track }: { track: Track }) {
               </option>
             ))}
           </optgroup>
-        ) : (
+        )}
+        {!drums && (
           <>
             <optgroup label="Built-in synths">
               {SYNTHS.map((s) => (
