@@ -1,5 +1,5 @@
 import { type Bar, TPW, gcd } from './time';
-import { DRUMS, drumByGm, type TrackKind } from './drums';
+import type { KitLane } from './kit';
 
 export interface Note {
   id: string;
@@ -108,19 +108,25 @@ function renderMini(tokens: Token[], render: (t: Token) => string, indent: strin
   return lines.length > 1 ? '`' + lines.join('\n' + indent) + '`' : '`' + lines[0] + '`';
 }
 
-function renderVoice(voice: Chord[], bars: Bar[], length: number, step: number, indent: string, kind: TrackKind): string {
-  const tokens = voiceTokens(voice, bars, length, step);
-  const name = kind === 'drums' ? (p: number) => drumByGm.get(p)?.s ?? '~' : pitchName;
-  const fn = kind === 'drums' ? 's' : 'note';
+interface Voice {
+  chords: Chord[];
+  lane?: KitLane;
+}
+
+function renderVoice({ chords, lane }: Voice, bars: Bar[], length: number, step: number, indent: string): string {
+  const tokens = voiceTokens(chords, bars, length, step);
+  const name = lane ? () => lane.sample : pitchName;
+  const fn = lane ? 's' : 'note';
   const notes = renderMini(
     tokens,
     (t) => (!t.chord ? '~' : t.chord.pitches.length === 1 ? name(t.chord.pitches[0]) : `[${t.chord.pitches.map(name).join(',')}]`),
     indent + ' '.repeat(fn.length + 2),
   );
   let code = `${fn}(${notes})`;
-  const vels = new Set(voice.map((c) => c.vel));
+  if (lane?.bank) code += `.bank("${lane.bank}")`;
+  const vels = new Set(chords.map((c) => c.vel));
   if (vels.size === 1) {
-    const v = voice[0].vel;
+    const v = chords[0].vel;
     if (v !== 1) code += `.velocity(${fmtNum(v)})`;
   } else {
     code += `\n${indent}  .velocity(${renderMini(tokens, (t) => (t.chord ? fmtNum(t.chord.vel) : '~'), indent + '            ')})`;
@@ -128,17 +134,19 @@ function renderVoice(voice: Chord[], bars: Bar[], length: number, step: number, 
   return code;
 }
 
-function drumVoices(notes: Note[]): Chord[][] {
-  return DRUMS.flatMap((d) => {
-    const piece = notes.filter((n) => n.pitch === d.gm);
-    return piece.length ? splitVoices(toChords(piece)) : [];
+/** One voice per lane (more if hits on a lane overlap), kick-side lanes first. */
+function kitVoices(notes: Note[], lanes: KitLane[]): Voice[] {
+  return [...lanes].reverse().flatMap((lane) => {
+    const hits = notes.filter((n) => n.pitch === lane.note);
+    return hits.length ? splitVoices(toChords(hits)).map((chords) => ({ chords, lane })) : [];
   });
 }
 
-export function generateTrackCode(allNotes: Note[], bars: Bar[], length: number, kind: TrackKind = 'notes'): string {
+/** Generates canonical Strudel code; pass `lanes` for a kit track. */
+export function generateTrackCode(allNotes: Note[], bars: Bar[], length: number, lanes?: KitLane[]): string {
   const notes = allNotes
     .filter((n) => n.start < length && n.dur > 0)
-    .filter((n) => kind === 'notes' || drumByGm.has(n.pitch))
+    .filter((n) => !lanes || lanes.some((l) => l.note === n.pitch))
     .map((n) => ({ ...n, dur: Math.min(n.dur, length - n.start) }));
   if (!notes.length) return 'silence';
 
@@ -146,11 +154,11 @@ export function generateTrackCode(allNotes: Note[], bars: Bar[], length: number,
   for (const n of notes) step = gcd(gcd(step, n.start), n.dur);
   for (const b of bars) step = gcd(step, b.start);
 
-  const voices = kind === 'drums' ? drumVoices(notes) : splitVoices(toChords(notes));
+  const voices = lanes ? kitVoices(notes, lanes) : splitVoices(toChords(notes)).map((chords) => ({ chords }));
   const cycles = length / TPW;
   const slow = cycles === 1 ? '' : `.slow(${fmtNum(cycles)})`;
 
-  if (voices.length === 1) return renderVoice(voices[0], bars, length, step, '', kind) + slow;
-  const body = voices.map((v) => '  ' + renderVoice(v, bars, length, step, '  ', kind)).join(',\n');
+  if (voices.length === 1) return renderVoice(voices[0], bars, length, step, '') + slow;
+  const body = voices.map((v) => '  ' + renderVoice(v, bars, length, step, '  ')).join(',\n');
   return `stack(\n${body}\n)${slow}`;
 }

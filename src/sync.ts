@@ -1,5 +1,6 @@
 import { useStore, trackPattern, songInfo } from './store';
 import { engine, applyOutput, stack, silence } from './strudel/engine';
+import { kitPitch } from './strudel/compile';
 import { cpsFromBpm, TPW } from './music/time';
 
 export function loopRange() {
@@ -20,7 +21,7 @@ function rebuild() {
       const c = trackPattern(t);
       if (!c) return undefined;
       try {
-        return applyOutput(c.pattern, t.output, t.gain, t.kind);
+        return applyOutput(c.pattern, t.output, t.gain, t.kind === 'kit' ? kitPitch(t.lanes ?? []) : undefined);
       } catch (e) {
         console.warn(`track ${t.name}:`, e);
         return undefined;

@@ -1,13 +1,15 @@
 import type { Project, Track } from './store';
 import { songInfo } from './store';
 import { TPW } from './music/time';
-import { midiDrumMap } from './music/drums';
+import { laneKey } from './music/kit';
 
 const outputSuffix = (t: Track): string => {
   const parts: string[] = [];
   if (t.output.type === 'synth') parts.push(`.s("${t.output.sound}")`);
-  if (t.output.type === 'kit' && t.output.bank) parts.push(`.bank("${t.output.bank}")`);
-  if (t.output.type === 'midi' && t.kind === 'drums') parts.push(`.withValue(v => ({ ...v, note: (${JSON.stringify(midiDrumMap)})[v.s] }))`);
+  if (t.output.type === 'midi' && t.kind === 'kit') {
+    const notes = JSON.stringify(Object.fromEntries((t.lanes ?? []).map((l) => [laneKey(l), l.note])));
+    parts.push(`.withValue(v => ({ ...v, note: (${notes})[(v.bank ? v.bank + '_' : '') + v.s + (v.n ? ':' + v.n : '')] }))`);
+  }
   if (t.output.type === 'midi') parts.push(`.midichan(${t.output.channel})`, `.midi('${t.output.port}')`);
   else if (t.gain !== 1) parts.push(`.postgain(${t.gain})`);
   return parts.join('');

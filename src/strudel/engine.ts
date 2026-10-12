@@ -5,8 +5,7 @@ import * as webaudio from '@strudel/webaudio';
 import * as midi from '@strudel/midi';
 import { registerSoundfonts } from '@strudel/soundfonts';
 import { transpiler } from '@strudel/transpiler';
-import type { Pattern } from './compile';
-import { midiDrumMap, type TrackKind } from '../music/drums';
+import type { Pattern, PitchOf } from './compile';
 
 let repl: any;
 let audioInit: Promise<void> | undefined;
@@ -100,22 +99,22 @@ export const engine = {
     }
     await ensureAudio();
     const ctx = webaudio.getAudioContext();
-    const sound = out.type === 'synth' ? { s: out.sound } : out.type === 'kit' ? { bank: out.bank || undefined } : { s: 'triangle' };
+    const sound = out.type === 'synth' ? { s: out.sound } : value.s ? {} : { s: 'triangle' };
     webaudio.superdough({ ...value, ...sound }, ctx.currentTime + 0.02, 0.3);
   },
 };
 
 export type Output =
   | { type: 'synth'; sound: string }
-  | { type: 'kit'; bank: string }
+  | { type: 'kit' }
   | { type: 'midi'; port: string; channel: number }
   | { type: 'code' };
 
-export function applyOutput(pattern: Pattern, out: Output, gain: number, kind: TrackKind): Pattern {
+/** `midiNoteOf` maps kit hits to their lane's MIDI note. */
+export function applyOutput(pattern: Pattern, out: Output, gain: number, midiNoteOf?: PitchOf): Pattern {
   if (out.type === 'synth') pattern = pattern.s(out.sound);
-  if (out.type === 'kit' && out.bank) pattern = pattern.bank(out.bank);
   if (out.type === 'midi') {
-    if (kind === 'drums') pattern = pattern.withValue((v: any) => ({ ...v, note: midiDrumMap[v.s] ?? v.note }));
+    if (midiNoteOf) pattern = pattern.withValue((v: any) => ({ ...v, note: midiNoteOf(v) ?? v.note }));
     return pattern.midichan(out.channel).midi(out.port);
   }
   return gain === 1 ? pattern : pattern.postgain(gain);
@@ -133,4 +132,9 @@ export function onMidiChange(cb: (ports: string[]) => void) {
   const handler = () => cb(midi.WebMidi.outputs.map((o: any) => o.name));
   midi.WebMidi.addListener('connected', handler);
   midi.WebMidi.addListener('disconnected', handler);
+}
+
+/** Names of every loaded sound (samples, synths, soundfonts). */
+export function availableSounds(): string[] {
+  return Object.keys(webaudio.soundMap.get()).sort();
 }

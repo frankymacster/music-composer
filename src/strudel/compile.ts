@@ -2,7 +2,7 @@ import { noteToMidi, freqToMidi } from '@strudel/core';
 import { transpiler } from '@strudel/transpiler';
 import { TPW } from '../music/time';
 import type { Note } from '../music/codegen';
-import { drumByName, type TrackKind } from '../music/drums';
+import { laneKey, soundKey, type KitLane, type TrackKind } from '../music/kit';
 
 export type Pattern = any;
 
@@ -23,11 +23,6 @@ export function compile(code: string): Compiled {
   }
 }
 
-function drumPitch(value: any): number | undefined {
-  if (typeof value !== 'object' || value === null || typeof value.s !== 'string') return undefined;
-  return drumByName.get(value.s)?.gm;
-}
-
 function hapPitch(value: any): number | undefined {
   if (typeof value !== 'object' || value === null) return undefined;
   const { note, n, freq } = value;
@@ -38,29 +33,50 @@ function hapPitch(value: any): number | undefined {
   return undefined;
 }
 
+export type PitchOf = (value: any) => number | undefined;
+
+export const notePitch: PitchOf = hapPitch;
+
+export function kitPitch(lanes: KitLane[]): PitchOf {
+  const byKey = new Map(lanes.map((l) => [laneKey(l), l.note]));
+  return (value) => {
+    const key = typeof value === 'object' && value !== null ? soundKey(value) : undefined;
+    return key === undefined ? undefined : byKey.get(key);
+  };
+}
+
 export function onsetHaps(pattern: Pattern, length: number): any[] {
   return pattern.queryArc(0, length / TPW).filter((h: any) => h.hasOnset());
 }
 
-/** Guess whether a pattern is mostly drum hits or pitched notes. */
+/** Guess whether a pattern is mostly sample hits (kit) or pitched notes. */
 export function detectKind(pattern: Pattern, length: number): TrackKind {
-  let drums = 0;
+  let hits = 0;
   let notes = 0;
   for (const hap of onsetHaps(pattern, length)) {
     if (hapPitch(hap.value) !== undefined) notes++;
-    else if (drumPitch(hap.value) !== undefined) drums++;
+    else if (typeof hap.value?.s === 'string') hits++;
   }
-  return drums > notes ? 'drums' : 'notes';
+  return hits > notes ? 'kit' : 'notes';
 }
 
-/** True when every onset can be represented on the given kind of grid. */
-export function fitsGrid(pattern: Pattern, length: number, kind: TrackKind): boolean {
-  const pitchOf = kind === 'drums' ? drumPitch : hapPitch;
+/** Distinct sounds (s, n, bank) hit by a pattern, in order of first appearance. */
+export function kitSounds(pattern: Pattern, length: number): { s: string; n?: number; bank?: string }[] {
+  const seen = new Map<string, { s: string; n?: number; bank?: string }>();
+  for (const hap of onsetHaps(pattern, length)) {
+    const v = hap.value;
+    const key = typeof v === 'object' && v !== null ? soundKey(v) : undefined;
+    if (key && !seen.has(key)) seen.set(key, { s: v.s, n: v.n || undefined, bank: v.bank || undefined });
+  }
+  return [...seen.values()];
+}
+
+/** True when every onset can be represented on the grid. */
+export function fitsGrid(pattern: Pattern, length: number, pitchOf: PitchOf): boolean {
   return onsetHaps(pattern, length).every((h) => pitchOf(h.value) !== undefined);
 }
 
-export function hapsToNotes(pattern: Pattern, length: number, kind: TrackKind = 'notes'): Note[] {
-  const pitchOf = kind === 'drums' ? drumPitch : hapPitch;
+export function hapsToNotes(pattern: Pattern, length: number, pitchOf: PitchOf = notePitch): Note[] {
   const notes: Note[] = [];
   let i = 0;
   for (const hap of onsetHaps(pattern, length)) {

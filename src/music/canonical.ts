@@ -1,16 +1,18 @@
 // A track's code is "grid-editable" when it only uses the shapes the code generator emits:
-//   silence | (fn(mini)[.velocity(num|mini)] | stack(voice, ...))[.slow(num)]
-// where fn is note() for instrument tracks and s() for drum tracks.
+//   silence | (voice | stack(voice, ...))[.slow(num)]
+//   voice = note(mini)[.velocity(num|mini)]             (instrument tracks)
+//         | s(mini)[.bank(str)][.velocity(num|mini)]    (kit tracks)
 // Anything else (transforms, randomness, alternation) makes it a code track.
 
-import type { TrackKind } from './drums';
+import type { TrackKind } from './kit';
 
 const NOTE_MINI = /^(?:\s|[a-gA-G][#bsf]*-?\d*|\d+(?:\.\d+)?|[~\-_@[\],.*!])*$/;
-const DRUM_MINI = /^(?:\s|[a-z]+|\d+(?:\.\d+)?|[~\-_@[\],.*!])*$/;
+const KIT_MINI = /^(?:\s|[A-Za-z][\w#]*(?::\d+)?|\d+(?:\.\d+)?|[~\-_@[\],.*!])*$/;
 
 export function isGridCode(code: string, kind: TrackKind = 'notes'): boolean {
-  const fn = kind === 'drums' ? 's(' : 'note(';
-  const mini = kind === 'drums' ? DRUM_MINI : NOTE_MINI;
+  const kit = kind === 'kit';
+  const fn = kit ? 's(' : 'note(';
+  const mini = kit ? KIT_MINI : NOTE_MINI;
   const s = code.trim();
   let i = 0;
   const ws = () => {
@@ -41,7 +43,11 @@ export function isGridCode(code: string, kind: TrackKind = 'notes'): boolean {
   };
   const voice = () => {
     if (!(lit(fn) && str() && lit(')'))) return false;
-    const save = i;
+    let save = i;
+    if (kit && lit('.bank(')) {
+      if (!(str() && lit(')'))) return false;
+      save = i;
+    } else i = save;
     if (lit('.velocity(')) return (num() || str()) && lit(')');
     i = save;
     return true;

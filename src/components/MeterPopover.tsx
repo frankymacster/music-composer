@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useStore } from '../store';
 import { meterAt } from '../music/time';
 
@@ -11,12 +11,14 @@ export function MeterPopover({ bar, x, onClose }: { bar: number; x: number; onCl
   const [num, setNum] = useState(current.num);
   const [den, setDen] = useState(current.den);
   const isChange = song.meters.some((m) => m.bar === bar);
+  const numRef = useRef<HTMLInputElement>(null);
+  useEffect(() => numRef.current?.focus({ preventScroll: true }), []);
 
   return (
     <div className="popover" style={{ left: Math.max(8, x), top: 20 }} onKeyDown={(e) => e.key === 'Escape' && onClose()}>
       <div className="popover-title">Time signature from bar {bar + 1}</div>
       <div className="row">
-        <input type="number" min={1} max={64} value={num} autoFocus onChange={(e) => setNum(Math.max(1, Math.min(64, +e.target.value || 1)))} />
+        <input ref={numRef} type="number" min={1} max={64} value={num} onChange={(e) => setNum(Math.max(1, Math.min(64, +e.target.value || 1)))} />
         <span>/</span>
         <select value={den} onChange={(e) => setDen(+e.target.value)}>
           {DENS.map((d) => (

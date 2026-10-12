@@ -279,7 +279,7 @@ button.icon {
   background: #2b3a2f;
   color: #8fd19e;
 }
-.badge.drums {
+.badge.kit {
   background: #4a3424;
   color: #ffb27a;
 }
@@ -331,7 +331,7 @@ button.icon {
   flex: 1;
   min-width: 0;
   position: relative;
-  overflow: hidden;
+  overflow: visible;
   min-height: 0;
 }
 .roll canvas {
@@ -451,3 +451,30 @@ button.icon {
   color: var(--muted);
 }
 
+
+.lane-editor label {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.lane-editor input:not([type='number']),
+.lane-editor select {
+  width: 100%;
+}
+.lane-editor .error {
+  color: var(--red);
+  font-size: 12px;
+}
+button.danger:hover {
+  color: var(--red);
+  border-color: var(--red);
+}
+.add-lane {
+  position: absolute;
+  left: 6px;
+  top: 7px;
+  font-size: 11px;
+  padding: 2px 8px;
+}

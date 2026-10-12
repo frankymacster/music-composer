@@ -2,19 +2,19 @@ import { useState } from 'react';
 import { useStore, COLORS, type Track } from '../store';
 import { SOUNDFONTS, SYNTHS, soundLabel } from '../sounds';
 import { enableMidi } from '../strudel/engine';
-import { DRUM_BANKS } from '../music/drums';
+import { DRUM_BANKS, isStandardDrum, parseSample } from '../music/kit';
 
 function OutputSelect({ track }: { track: Track }) {
   const update = useStore((s) => s.updateTrack);
   const midiPorts = useStore((s) => s.midiPorts);
   const set = useStore((s) => s.set);
   const out = track.output;
-  const value = out.type === 'synth' ? `synth:${out.sound}` : out.type === 'kit' ? `kit:${out.bank}` : out.type;
-  const drums = track.kind === 'drums';
+  const value = out.type === 'synth' ? `synth:${out.sound}` : out.type;
+  const kit = track.kind === 'kit';
 
   const onChange = async (v: string) => {
     if (v.startsWith('synth:')) update(track.id, { output: { type: 'synth', sound: v.slice(6) } });
-    else if (v.startsWith('kit:')) update(track.id, { output: { type: 'kit', bank: v.slice(4) } });
+    else if (v === 'kit') update(track.id, { output: { type: 'kit' } });
     else if (v === 'code') update(track.id, { output: { type: 'code' } });
     else if (v === 'midi') {
       let ports = midiPorts;
@@ -27,24 +27,15 @@ function OutputSelect({ track }: { track: Track }) {
           return;
         }
       }
-      update(track.id, { output: { type: 'midi', port: ports[0] ?? 'IAC', channel: drums ? 10 : 1 } });
+      update(track.id, { output: { type: 'midi', port: ports[0] ?? 'IAC', channel: kit ? 10 : 1 } });
     }
   };
 
   return (
     <div className="output">
       <select value={value} onChange={(e) => onChange(e.target.value)} onClick={(e) => e.stopPropagation()}>
-        {(drums || track.mode === 'code') && (
-          <optgroup label="Drum kits">
-            <option value="kit:">Default kit</option>
-            {DRUM_BANKS.map((b) => (
-              <option key={b} value={`kit:${b}`}>
-                {b}
-              </option>
-            ))}
-          </optgroup>
-        )}
-        {!drums && (
+        {kit && <option value="kit">Built-in samples</option>}
+        {!kit && (
           <>
             <optgroup label="Built-in synths">
               {SYNTHS.map((s) => (
@@ -67,6 +58,7 @@ function OutputSelect({ track }: { track: Track }) {
           <option value="code">Defined in code</option>
         </optgroup>
       </select>
+      {kit && <KitPreset track={track} />}
       {out.type === 'midi' && (
         <div className="row" onClick={(e) => e.stopPropagation()}>
           <select value={out.port} onChange={(e) => update(track.id, { output: { ...out, port: e.target.value } })}>
@@ -98,6 +90,24 @@ function OutputSelect({ track }: { track: Track }) {
         />
       )}
     </div>
+  );
+}
+
+/** Sets the drum-machine bank of every standard drum lane (bd, sd, hh, …) at once. */
+function KitPreset({ track }: { track: Track }) {
+  const apply = useStore((s) => s.applyKitPreset);
+  const banks = new Set((track.lanes ?? []).filter((l) => isStandardDrum(parseSample(l.sample).s)).map((l) => l.bank));
+  const value = banks.size === 1 ? [...banks][0] : banks.size ? 'mixed' : '';
+  return (
+    <select value={value} onChange={(e) => apply(track.id, e.target.value)} onClick={(e) => e.stopPropagation()} title="Drum machine for the standard drum lanes">
+      {value === 'mixed' && <option value="mixed">Kit: mixed banks</option>}
+      <option value="">Kit: default</option>
+      {DRUM_BANKS.map((b) => (
+        <option key={b} value={b}>
+          Kit: {b}
+        </option>
+      ))}
+    </select>
   );
 }
 
@@ -134,7 +144,7 @@ function TrackRow({ track, selected }: { track: Track; selected: boolean }) {
             {track.name}
           </span>
         )}
-        {track.kind === 'drums' && <span className="badge drums">drums</span>}
+        {track.kind === 'kit' && <span className="badge kit">kit</span>}
         <span className={`badge ${track.mode}`}>{track.mode}</span>
         <button
           className={`toggle ${track.mute ? 'on mute' : ''}`}
@@ -184,8 +194,8 @@ export function TrackList({ onCollapse }: { onCollapse: () => void }) {
         <button onClick={() => addTrack('notes')} title="Add an instrument track">
           + Inst
         </button>
-        <button onClick={() => addTrack('drums')} title="Add a drum track">
-          + Drums
+        <button onClick={() => addTrack('kit')} title="Add a kit track (one lane per sample)">
+          + Kit
         </button>
         <button className="icon" onClick={onCollapse} title="Collapse tracks">
           ‹

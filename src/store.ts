@@ -2,8 +2,19 @@ import { create } from 'zustand';
 import { generateTrackCode, type Note } from './music/codegen';
 import { isGridCode } from './music/canonical';
 import { computeBars, songLength, type MeterChange, type Song, TPW } from './music/time';
-import { compile, detectKind, fitsGrid, hapsToNotes, type Compiled } from './strudel/compile';
-import { drumByName, type TrackKind } from './music/drums';
+import { compile, detectKind, fitsGrid, hapsToNotes, kitPitch, kitSounds, notePitch, type Compiled } from './strudel/compile';
+import {
+  STANDARD_DRUMS,
+  defaultLanes,
+  freeNote,
+  isStandardDrum,
+  laneForValue,
+  laneKey,
+  parseSample,
+  soundKey,
+  type KitLane,
+  type TrackKind,
+} from './music/kit';
 import type { Output } from './strudel/engine';
 
 export interface Track {
@@ -11,6 +22,8 @@ export interface Track {
   name: string;
   color: string;
   kind: TrackKind;
+  /** Kit tracks only, top → bottom. */
+  lanes?: KitLane[];
   code: string;
   mode: 'grid' | 'code';
   notes: Note[];
@@ -67,7 +80,31 @@ const withIds = (notes: Note[]) => notes.map((n) => ({ ...n, id: uid() }));
 function regen(track: Track, song: Song): Track {
   if (track.mode !== 'grid') return track;
   const { bars, length } = songInfo(song);
-  return { ...track, code: generateTrackCode(track.notes, bars, length, track.kind) };
+  return { ...track, code: generateTrackCode(track.notes, bars, length, track.kind === 'kit' ? track.lanes : undefined) };
+}
+
+/** Adds a lane (at the top) for every sound not already in the kit. */
+function mergeLanes(lanes: KitLane[], sounds: { s: string; n?: number; bank?: string }[]): KitLane[] {
+  const keys = new Set(lanes.map(laneKey));
+  let out = lanes;
+  for (const v of sounds) {
+    if (keys.has(soundKey(v)!)) continue;
+    const lane = laneForValue(v, out, uid);
+    keys.add(laneKey(lane));
+    out = [lane, ...out];
+  }
+  return out;
+}
+
+/** Why a lane change is not allowed, or undefined if it is. */
+export function laneConflict(lanes: KitLane[], lane: KitLane): string | undefined {
+  if (!parseSample(lane.sample).s) return 'Sample name is required';
+  if (!/^[A-Za-z][\w#]*(:\d+)?$/.test(lane.sample)) return 'Use a Strudel sample name like bd, cp:2 or RolandTR808_bd';
+  if (lane.note < 0 || lane.note > 127) return 'MIDI note must be 0–127';
+  const others = lanes.filter((l) => l.id !== lane.id);
+  if (others.some((l) => l.note === lane.note)) return `MIDI note ${lane.note} is used by another lane`;
+  if (others.some((l) => laneKey(l) === laneKey(lane))) return 'Another lane already plays this sound';
+  return undefined;
 }
 
 function makeTrack(partial: Partial<Track> & { name: string }, song: Song, index: number): Track {
@@ -122,7 +159,7 @@ function demoProject(): Project {
     tracks: [
       makeTrack({ name: 'Keys', notes: keys, output: { type: 'synth', sound: 'gm_epiano1' } }, song, 0),
       makeTrack({ name: 'Bass', notes: bass, output: { type: 'synth', sound: 'gm_synth_bass_1' } }, song, 1),
-      makeTrack({ name: 'Drums', kind: 'drums', notes: drums, output: { type: 'kit', bank: 'RolandTR909' } }, song, 2),
+      makeTrack({ name: 'Drums', kind: 'kit', lanes: defaultLanes(uid, 'RolandTR909'), notes: drums, output: { type: 'kit' } }, song, 2),
       {
         ...makeTrack({ name: 'Arp', output: { type: 'synth', sound: 'gm_vibraphone' }, gain: 0.6 }, song, 3),
         mode: 'code',
@@ -132,11 +169,24 @@ function demoProject(): Project {
   };
 }
 
-const hit = (s: string, start: number, vel = 0.8): Note => ({ id: uid(), pitch: drumByName.get(s)!.gm, start, dur: TPW / 16, vel });
+const hit = (s: string, start: number, vel = 0.8): Note => ({
+  id: uid(),
+  pitch: STANDARD_DRUMS.find((d) => d.s === s)!.gm,
+  start,
+  dur: TPW / 16,
+  vel,
+});
 
 export const migrate = (p: Project): Project => ({
   ...p,
-  tracks: p.tracks.map((t) => ({ ...t, kind: t.kind ?? 'notes' })),
+  tracks: p.tracks.map((t) => {
+    const kind = (t.kind as string) ?? 'notes';
+    if (kind !== 'drums') return { ...t, kind: kind as TrackKind };
+    // drum tracks (fixed GM lanes, track-level bank) became kit tracks
+    const bank = (t.output as { bank?: string }).bank ?? '';
+    const output: Output = t.output.type === 'kit' ? { type: 'kit' } : t.output;
+    return regen({ ...t, kind: 'kit', lanes: defaultLanes(uid, bank), output }, p.song);
+  }),
 });
 
 const STORAGE_KEY = 'music-composer:project';
@@ -175,6 +225,11 @@ interface State {
   setMeter(bar: number, meter: { num: number; den: number } | null): void;
 
   addTrack(kind: TrackKind): void;
+  addLane(trackId: string): string | undefined;
+  updateLane(trackId: string, lane: KitLane): string | undefined;
+  removeLane(trackId: string, laneId: string): void;
+  moveLane(trackId: string, laneId: string, dir: -1 | 1): void;
+  applyKitPreset(trackId: string, bank: string): void;
   removeTrack(id: string): void;
   updateTrack(id: string, patch: Partial<Track>, history?: boolean): void;
   setNotes(id: string, notes: Note[], history?: boolean): void;
@@ -249,8 +304,8 @@ export const useStore = create<State>((set, get) => {
     addTrack: (kind) => {
       const p = get().project;
       const t = makeTrack(
-        kind === 'drums'
-          ? { name: 'Drums', kind, output: { type: 'kit', bank: '' } }
+        kind === 'kit'
+          ? { name: 'Kit', kind, lanes: defaultLanes(uid), output: { type: 'kit' } }
           : { name: `Track ${p.tracks.length + 1}` },
         p.song,
         p.tracks.length,
@@ -258,6 +313,63 @@ export const useStore = create<State>((set, get) => {
       commit({ ...p, tracks: [...p.tracks, t] });
       set({ selectedTrackId: t.id, selection: new Set() });
     },
+    addLane: (trackId) => {
+      const t = get().project.tracks.find((t) => t.id === trackId);
+      if (!t?.lanes) return;
+      const used = new Set(t.lanes.map(laneKey));
+      const std = STANDARD_DRUMS.find((d) => !used.has(d.s));
+      let sample = std?.s ?? 'perc';
+      for (let i = 1; used.has(laneKey({ sample, bank: '' })); i++) sample = `perc:${i}`;
+      const lane: KitLane = { id: uid(), name: std?.name ?? '', sample, bank: '', note: freeNote(t.lanes, std?.gm) };
+      mapTrack(trackId, (t) => regen({ ...t, lanes: [lane, ...t.lanes!] }, get().project.song));
+      return lane.id;
+    },
+    updateLane: (trackId, lane) => {
+      const t = get().project.tracks.find((t) => t.id === trackId);
+      const old = t?.lanes?.find((l) => l.id === lane.id);
+      if (!t || !old) return 'Lane not found';
+      const conflict = laneConflict(t.lanes!, lane);
+      if (conflict) return conflict;
+      mapTrack(trackId, (t) =>
+        regen(
+          {
+            ...t,
+            lanes: t.lanes!.map((l) => (l.id === lane.id ? lane : l)),
+            notes: lane.note === old.note ? t.notes : t.notes.map((n) => (n.pitch === old.note ? { ...n, pitch: lane.note } : n)),
+          },
+          get().project.song,
+        ),
+      );
+      return undefined;
+    },
+    removeLane: (trackId, laneId) =>
+      mapTrack(trackId, (t) => {
+        const lane = t.lanes?.find((l) => l.id === laneId);
+        if (!lane) return t;
+        return regen(
+          { ...t, lanes: t.lanes!.filter((l) => l.id !== laneId), notes: t.notes.filter((n) => n.pitch !== lane.note) },
+          get().project.song,
+        );
+      }),
+    moveLane: (trackId, laneId, dir) =>
+      mapTrack(trackId, (t) => {
+        const lanes = [...(t.lanes ?? [])];
+        const i = lanes.findIndex((l) => l.id === laneId);
+        const j = i + dir;
+        if (i < 0 || j < 0 || j >= lanes.length) return t;
+        [lanes[i], lanes[j]] = [lanes[j], lanes[i]];
+        return regen({ ...t, lanes }, get().project.song);
+      }),
+    applyKitPreset: (trackId, bank) =>
+      mapTrack(trackId, (t) => {
+        let lanes = t.lanes ?? [];
+        for (const lane of lanes) {
+          if (!isStandardDrum(parseSample(lane.sample).s) || lane.bank === bank) continue;
+          const next = { ...lane, bank };
+          if (!laneConflict(lanes, next)) lanes = lanes.map((l) => (l.id === lane.id ? next : l));
+        }
+        return regen({ ...t, lanes }, get().project.song);
+      }),
     removeTrack: (id) => {
       const p = get().project;
       const tracks = p.tracks.filter((t) => t.id !== id);
@@ -273,9 +385,12 @@ export const useStore = create<State>((set, get) => {
         const c = compileCached(code);
         if (!c.ok) return { ...t, code };
         const { length } = songInfo(get().project.song);
-        if (isGridCode(code, t.kind) && fitsGrid(c.pattern, length, t.kind)) {
-          const notes = withIds(hapsToNotes(c.pattern, length, t.kind));
-          return { ...t, code, mode: 'grid', notes };
+        if (t.kind === 'kit' && isGridCode(code, 'kit')) {
+          const lanes = mergeLanes(t.lanes ?? [], kitSounds(c.pattern, length));
+          return { ...t, code, mode: 'grid', lanes, notes: withIds(hapsToNotes(c.pattern, length, kitPitch(lanes))) };
+        }
+        if (t.kind === 'notes' && isGridCode(code) && fitsGrid(c.pattern, length, notePitch)) {
+          return { ...t, code, mode: 'grid', notes: withIds(hapsToNotes(c.pattern, length)) };
         }
         return { ...t, code, mode: 'code', notes: [] };
       }),
@@ -284,16 +399,17 @@ export const useStore = create<State>((set, get) => {
       const c = t && trackPattern(t);
       if (!c) return;
       const { length } = songInfo(get().project.song);
-      const kind = detectKind(c.pattern, length);
-      const notes = withIds(hapsToNotes(c.pattern, length, kind));
+      const kind = t.kind === 'kit' ? 'kit' : detectKind(c.pattern, length);
+      const lanes = kind === 'kit' ? mergeLanes(t.lanes ?? [], kitSounds(c.pattern, length)) : undefined;
+      const notes = withIds(hapsToNotes(c.pattern, length, lanes ? kitPitch(lanes) : notePitch));
       const output: Output =
-        kind === 'drums' && t.output.type !== 'kit' && t.output.type !== 'midi'
-          ? { type: 'kit', bank: '' }
+        kind === 'kit' && t.output.type !== 'kit' && t.output.type !== 'midi'
+          ? { type: 'kit' }
           : kind === 'notes' && t.output.type === 'kit'
             ? { type: 'synth', sound: 'gm_epiano1' }
             : t.output;
       get().checkpoint();
-      get().updateTrack(id, { kind, output }, false);
+      get().updateTrack(id, { kind, output, lanes }, false);
       get().setNotes(id, notes, false);
     },
 

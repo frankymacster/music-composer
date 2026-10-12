@@ -8,7 +8,7 @@ import { PianoRoll, preview, snapLength } from './components/PianoRoll';
 import { CodePanel } from './components/CodePanel';
 import { CollapsedBar, Splitter, usePane } from './components/Panes';
 import type { Note } from './music/codegen';
-import { rowsFor } from './music/drums';
+import { rowsFor } from './music/kit';
 
 let clipboard: Note[] = [];
 
@@ -67,7 +67,7 @@ function handleKey(e: KeyboardEvent) {
     s.select(new Set(copies.map((n) => n.id)));
   } else if ((key === 'arrowup' || key === 'arrowdown') && sel.length) {
     e.preventDefault();
-    const rows = rowsFor(track.kind);
+    const rows = rowsFor(track);
     const d = (key === 'arrowup' ? -1 : 1) * (e.shiftKey && track.kind === 'notes' ? 12 : 1);
     const shift = (p: number) => rows[rows.indexOf(p) + d];
     if (sel.some((n) => shift(n.pitch) === undefined)) return;

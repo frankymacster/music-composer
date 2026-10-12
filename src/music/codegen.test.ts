@@ -1,7 +1,7 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import { baseScope } from '../strudel/scope';
-import { compile, detectKind, fitsGrid, hapsToNotes } from '../strudel/compile';
-import type { TrackKind } from './drums';
+import { compile, detectKind, fitsGrid, hapsToNotes, kitPitch, kitSounds, notePitch } from '../strudel/compile';
+import { defaultLanes, type KitLane } from './kit';
 import { generateTrackCode, type Note } from './codegen';
 import { isGridCode } from './canonical';
 import { computeBars, songLength, type Song } from './time';
@@ -13,15 +13,16 @@ beforeAll(async () => {
 const strip = (ns: Note[]) =>
   ns.map(({ pitch, start, dur, vel }) => ({ pitch, start, dur, vel })).sort((a, b) => a.start - b.start || a.pitch - b.pitch);
 
-function roundTrip(notes: Note[], song: Song, kind: TrackKind = 'notes') {
+function roundTrip(notes: Note[], song: Song, lanes?: KitLane[]) {
   const bars = computeBars(song);
   const length = songLength(bars);
-  const code = generateTrackCode(notes, bars, length, kind);
-  expect(isGridCode(code, kind)).toBe(true);
+  const code = generateTrackCode(notes, bars, length, lanes);
+  expect(isGridCode(code, lanes ? 'kit' : 'notes')).toBe(true);
   const c = compile(code);
   if (!c.ok) throw new Error(c.error + '\n' + code);
-  expect(fitsGrid(c.pattern, length, kind)).toBe(true);
-  expect(strip(hapsToNotes(c.pattern, length, kind))).toEqual(strip(notes));
+  const pitchOf = lanes ? kitPitch(lanes) : notePitch;
+  expect(fitsGrid(c.pattern, length, pitchOf)).toBe(true);
+  expect(strip(hapsToNotes(c.pattern, length, pitchOf))).toEqual(strip(notes));
   return code;
 }
 
@@ -60,29 +61,51 @@ describe('codegen round-trip', () => {
   });
 });
 
-describe('drums', () => {
+describe('kit', () => {
   const song: Song = { bpm: 120, bars: 2, meters: [{ bar: 0, num: 4, den: 4 }, { bar: 1, num: 6, den: 8 }] };
+  let lid = 0;
+  const lanes = defaultLanes(() => `l${lid++}`);
 
-  it('one s() line per piece, round-trips', () => {
+  it('one s() line per lane, kick first, round-trips', () => {
     const code = roundTrip(
       [n(36, 0, 120, 1), n(36, 960, 120), n(38, 480, 120), n(42, 0, 120, 0.5), n(42, 240, 120, 0.7), n(42, 1920, 120), n(49, 1920 + 720, 240)],
       song,
-      'drums',
+      lanes,
     );
     expect(code).toMatch(/^stack\(\n  s\(`bd/);
     expect(code.match(/s\(`/g)).toHaveLength(4);
   });
 
-  it('code with unknown samples is not grid-editable', () => {
-    const c = compile('s("bd arpy")');
-    if (!c.ok) throw new Error(c.error);
-    expect(fitsGrid(c.pattern, 1920, 'drums')).toBe(false);
+  it('per-lane banks, sample indexes and custom notes', () => {
+    const custom: KitLane[] = [
+      { id: 'a', name: 'Arp', sample: 'arpy:3', bank: '', note: 60 },
+      { id: 'b', name: '', sample: 'bd', bank: 'RolandTR909', note: 36 },
+      { id: 'c', name: '', sample: 'bd', bank: 'RolandTR808', note: 35 },
+    ];
+    const code = roundTrip([n(60, 0, 240), n(36, 480, 120), n(35, 960, 120)], { bpm: 120, bars: 1, meters: [{ bar: 0, num: 4, den: 4 }] }, custom);
+    expect(code).toContain('.bank("RolandTR808")');
+    expect(code).toContain('s(`arpy:3');
   });
 
-  it('detects drum patterns for baking', () => {
+  it('lists the sounds a pattern hits, for adding lanes', () => {
+    const c = compile('s("bd arpy:3 ~ bd").bank("<RolandTR909 x>")');
+    if (!c.ok) throw new Error(c.error);
+    expect(kitSounds(c.pattern, 1920)).toEqual([
+      { s: 'bd', bank: 'RolandTR909' },
+      { s: 'arpy', n: 3, bank: 'RolandTR909' },
+    ]);
+  });
+
+  it('code with sounds outside the kit does not fit', () => {
+    const c = compile('s("bd arpy")');
+    if (!c.ok) throw new Error(c.error);
+    expect(fitsGrid(c.pattern, 1920, kitPitch(lanes))).toBe(false);
+  });
+
+  it('detects sample patterns for baking', () => {
     const c = compile('s("bd*4, [~ sd]*2, hh*8")');
     if (!c.ok) throw new Error(c.error);
-    expect(detectKind(c.pattern, 1920)).toBe('drums');
+    expect(detectKind(c.pattern, 1920)).toBe('kit');
   });
 });
 
@@ -102,10 +125,12 @@ describe('isGridCode', () => {
   it.each([
     ['stack(s(`bd ~ bd ~`), s("~ sd").velocity(0.8)).slow(2)', true],
     ['s("bd*4")', true],
-    ['s("bd:3")', false],
+    ['s("arpy:3 RolandTR808_bd")', true],
+    ['s("bd sd").bank("RolandTR909").velocity(0.5)', true],
     ['note("c4")', false],
-    ['s("bd sd").bank("RolandTR909")', false],
-  ])('drums: %s → %s', (code, expected) => {
-    expect(isGridCode(code, 'drums')).toBe(expected);
+    ['s("bd sd").fast(2)', false],
+    ['s("<bd sd>")', false],
+  ])('kit: %s → %s', (code, expected) => {
+    expect(isGridCode(code, 'kit')).toBe(expected);
   });
 });

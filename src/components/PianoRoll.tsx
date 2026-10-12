@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
 import { useStore, selectedTrack, songInfo, trackPattern, uid, type Track } from '../store';
-import { hapsToNotes } from '../strudel/compile';
+import { hapsToNotes, kitPitch } from '../strudel/compile';
 import { engine } from '../strudel/engine';
 import { TPW, snapTick, barAtTick, type Bar } from '../music/time';
 import { isBlackKey, pitchLabel, type Note } from '../music/codegen';
-import { drumByGm, rowsFor, type TrackKind } from '../music/drums';
+import { laneLabel, laneValue, rowsFor, type KitLane, type TrackKind } from '../music/kit';
 import { MeterPopover } from './MeterPopover';
+import { LaneEditor } from './LaneEditor';
 import { loopRange } from '../sync';
 
 const METER_H = 18;
@@ -13,18 +14,35 @@ const RULER_H = 38;
 const VEL_H = 84;
 const EDGE = 6;
 
+const PEN_W = 18;
+
 interface Lane {
   kind: TrackKind;
   rows: number[];
   index: Map<number, number>;
   keysW: number;
+  kit: Map<number, KitLane>;
 }
 
-const makeLane = (kind: TrackKind, keysW: number): Lane => {
-  const rows = rowsFor(kind);
-  return { kind, rows, index: new Map(rows.map((p, i) => [p, i])), keysW };
-};
-const LANES: Record<TrackKind, Lane> = { notes: makeLane('notes', 64), drums: makeLane('drums', 96) };
+const makeLane = (kind: TrackKind, rows: number[], keysW: number, kit: KitLane[] = []): Lane => ({
+  kind,
+  rows,
+  index: new Map(rows.map((p, i) => [p, i])),
+  keysW,
+  kit: new Map(kit.map((l) => [l.note, l])),
+});
+const NOTES_LANE = makeLane('notes', rowsFor({ kind: 'notes' }), 64);
+const kitLanes = new WeakMap<KitLane[], Lane>();
+function laneFor(track: Track | undefined): Lane {
+  if (track?.kind !== 'kit') return NOTES_LANE;
+  const lanes = track.lanes ?? [];
+  let lane = kitLanes.get(lanes);
+  if (!lane) {
+    lane = makeLane('kit', rowsFor(track), 132, lanes);
+    kitLanes.set(lanes, lane);
+  }
+  return lane;
+}
 
 interface View {
   ppt: number;
@@ -48,11 +66,11 @@ type Drag =
 const ghostCache = { key: '', notes: [] as Note[] };
 function visibleNotes(track: Track, length: number): Note[] {
   if (track.mode === 'grid') return track.notes;
-  const key = `${track.code}|${length}`;
+  const key = `${track.code}|${length}|${track.kind === 'kit' ? JSON.stringify(track.lanes) : ''}`;
   if (ghostCache.key !== key) {
     const c = trackPattern(track);
     ghostCache.key = key;
-    ghostCache.notes = c ? hapsToNotes(c.pattern, length) : [];
+    ghostCache.notes = c ? hapsToNotes(c.pattern, length, track.kind === 'kit' ? kitPitch(track.lanes ?? []) : undefined) : [];
   }
   return ghostCache.notes;
 }
@@ -60,16 +78,16 @@ function visibleNotes(track: Track, length: number): Note[] {
 export const snapLength = (snap: number, bars: Bar[], at: number) => (snap === 0 ? barAtTick(bars, at).length : snap);
 
 export function preview(track: Track, pitch: number, vel = 0.8) {
-  if (track.kind === 'drums' && track.output.type !== 'midi') {
-    const d = drumByGm.get(pitch);
-    if (d) engine.preview({ s: d.s, velocity: vel }, track.output);
+  if (track.kind === 'kit' && track.output.type !== 'midi') {
+    const lane = track.lanes?.find((l) => l.note === pitch);
+    if (lane) engine.preview({ ...laneValue(lane), velocity: vel }, track.output);
     return;
   }
   engine.preview({ note: pitch, velocity: vel }, track.output);
 }
 
 export const newNoteLength = (track: Track, snap: number, bars: Bar[], at: number, last: number) =>
-  track.kind === 'drums' ? (snap > 1 ? snapLength(snap, bars, at) : TPW / 16) : last;
+  track.kind === 'kit' ? (snap > 1 ? snapLength(snap, bars, at) : TPW / 16) : last;
 
 export function PianoRoll() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -80,13 +98,15 @@ export function PianoRoll() {
     scrollY: (127 - 76) * 14,
     w: 0,
     h: 0,
-    lane: LANES.notes,
-    saved: { notes: { rowH: 14, scrollY: (127 - 76) * 14 }, drums: { rowH: 24, scrollY: 0 } },
+    lane: NOTES_LANE,
+    saved: { notes: { rowH: 14, scrollY: (127 - 76) * 14 }, kit: { rowH: 24, scrollY: 0 } },
   });
   const drag = useRef<Drag | null>(null);
   const hover = useRef<{ x: number; y: number } | null>(null);
   const lastLen = useRef(TPW / 8);
   const [meterEdit, setMeterEdit] = useState<{ bar: number; x: number } | null>(null);
+  const [laneEdit, setLaneEdit] = useState<{ laneId: string; y: number } | null>(null);
+  const track = useStore(selectedTrack);
 
   useEffect(() => {
     const canvas = canvasRef.current!;
@@ -115,15 +135,15 @@ export function PianoRoll() {
     const draw = () => {
       const s = useStore.getState();
       const track = selectedTrack(s);
-      const lane = LANES[track?.kind ?? 'notes'];
-      if (v.lane !== lane) {
+      const lane = laneFor(track);
+      if (v.lane.kind !== lane.kind) {
         v.saved[v.lane.kind] = { rowH: v.rowH, scrollY: v.scrollY };
         v.rowH = v.saved[lane.kind].rowH;
         v.scrollY = v.saved[lane.kind].scrollY;
-        v.lane = lane;
       }
+      v.lane = lane;
       const KEYS_W = lane.keysW;
-      const drums = lane.kind === 'drums';
+      const drums = lane.kind === 'kit';
       const { bars, length } = songInfo(s.project.song);
       const { w, h, ppt, rowH, scrollTick, scrollY } = v;
       const gridH = h - RULER_H - VEL_H;
@@ -294,9 +314,17 @@ export function PianoRoll() {
         ctx.fillRect(0, y, KEYS_W, rowH);
         ctx.fillStyle = 'rgba(0,0,0,0.35)';
         ctx.fillRect(0, y + rowH - 1, KEYS_W, 1);
+        const kl = lane.kit.get(p)!;
+        const mid = y + rowH / 2 + 4;
         ctx.fillStyle = '#c9cdd2';
         ctx.font = '11px ui-sans-serif, system-ui';
-        ctx.fillText(drumByGm.get(p)?.name ?? '', 8, y + rowH / 2 + 4);
+        ctx.fillText(laneLabel(kl), 8, mid, KEYS_W - PEN_W - 50);
+        ctx.fillStyle = '#7d838b';
+        ctx.font = '10px ui-monospace, Menlo, monospace';
+        const sample = kl.bank ? `${kl.bank.replace(/^Roland/, '')}·${kl.sample}` : kl.sample;
+        if (kl.name) ctx.fillText(sample, KEYS_W - PEN_W - 44, mid, 42);
+        ctx.fillStyle = '#9aa0a6';
+        ctx.fillText('✎', KEYS_W - PEN_W + 4, mid);
       }
       for (let i = iTop; i <= iBot && !drums; i++) {
         const p = lane.rows[i];
@@ -374,7 +402,7 @@ export function PianoRoll() {
       ctx.fillRect(0, 0, KEYS_W, RULER_H);
       ctx.fillStyle = '#7d838b';
       ctx.font = '10px ui-sans-serif, system-ui';
-      ctx.fillText('Meter', 8, 13);
+      if (!drums) ctx.fillText('Meter', 8, 13);
     };
     const ro = new ResizeObserver(() => {
       resize();
@@ -459,6 +487,7 @@ export function PianoRoll() {
       const { s, track, bars, length } = ctxState();
       if (!track) return;
       setMeterEdit(null);
+      setLaneEdit(null);
       canvas.setPointerCapture(e.pointerId);
       const gridBottom = v.h - VEL_H;
 
@@ -475,6 +504,12 @@ export function PianoRoll() {
 
       if (x < kw() && y < gridBottom) {
         const p = pitchAt(y);
+        if (p === undefined) return;
+        const kitLane = v.lane.kit.get(p);
+        if (kitLane && (x >= kw() - PEN_W || e.detail === 2)) {
+          setLaneEdit({ laneId: kitLane.id, y: yOf(p) });
+          return;
+        }
         preview(track, p);
         drag.current = { kind: 'keys', lastPitch: p };
         return;
@@ -536,7 +571,7 @@ export function PianoRoll() {
       if (s.draw || e.detail === 2) {
         const start = Math.max(0, snapTick(tickAt(x), s.snap, bars, 'floor'));
         const dur =
-          track.kind === 'drums' || s.draw
+          track.kind === 'kit' || s.draw
             ? newNoteLength(track, s.snap, bars, start, lastLen.current)
             : Math.max(snapLength(s.snap, bars, start), lastLen.current);
         const n: Note = { id: uid(), pitch: pitchAt(y), start, dur, vel: 0.8 };
@@ -686,6 +721,21 @@ export function PianoRoll() {
         Fit
       </button>
       {meterEdit && <MeterPopover bar={meterEdit.bar} x={meterEdit.x} onClose={() => setMeterEdit(null)} />}
+      {track?.kind === 'kit' && (
+        <button
+          className="add-lane"
+          title="Add a lane"
+          onClick={() => {
+            const id = useStore.getState().addLane(track.id);
+            if (id) setLaneEdit({ laneId: id, y: RULER_H });
+          }}
+        >
+          + Lane
+        </button>
+      )}
+      {laneEdit && track?.kind === 'kit' && (
+        <LaneEditor track={track} laneId={laneEdit.laneId} top={laneEdit.y} left={laneFor(track).keysW + 6} onClose={() => setLaneEdit(null)} />
+      )}
     </div>
   );
 }

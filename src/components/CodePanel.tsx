@@ -113,8 +113,8 @@ function TrackEditor({ track }: { track: Track }) {
       <div className={`mode-banner ${track.mode}`}>
         {track.mode === 'grid' ? (
           <>
-            <b>GRID</b> Generated from the {track.kind === 'drums' ? 'drum grid' : 'piano roll'}. Edits that stay in{' '}
-            <code>{track.kind === 'drums' ? 's' : 'note'} / stack / velocity / slow</code> form stay editable in the grid.
+            <b>GRID</b> Generated from the {track.kind === 'kit' ? 'kit lanes' : 'piano roll'}. Edits that stay in{' '}
+            <code>{track.kind === 'kit' ? 's / bank' : 'note'} / stack / velocity / slow</code> form stay editable in the grid.
           </>
         ) : (
           <>
