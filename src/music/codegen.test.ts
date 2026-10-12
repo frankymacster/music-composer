@@ -57,7 +57,7 @@ describe('codegen round-trip', () => {
   });
 
   it('empty track', () => {
-    expect(generateTrackCode([], computeBars({ bpm: 120, bars: 1, meters: [{ bar: 0, num: 4, den: 4 }] }), 1920)).toBe('silence');
+    expect(generateTrackCode([], computeBars({ bars: 1, meters: [{ bar: 0, num: 4, den: 4 }] }), 1920)).toBe('silence');
   });
 });
 

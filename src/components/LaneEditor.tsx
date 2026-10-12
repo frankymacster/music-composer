@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { useStore, laneConflict, type Track } from '../store';
+import { useStore, laneConflict, type TrackView as Track } from '../store';
 import { DRUM_BANKS, type KitLane } from '../music/kit';
 import { availableSounds } from '../strudel/engine';
 import { pitchLabel } from '../music/codegen';
@@ -23,7 +23,7 @@ export function LaneEditor({ track, laneId, top, left, onClose }: { track: Track
   useEffect(() => setDraft(lane), [lane]);
   if (!lane || !draft) return null;
 
-  const hits = track.notes.filter((n) => n.pitch === lane.note).length;
+  const hits = Object.values(track.clips).flatMap((c) => c.notes).filter((n) => n.pitch === lane.note).length;
   const commit = (next: KitLane) => {
     setDraft(next);
     const err = laneConflict(lanes, next);

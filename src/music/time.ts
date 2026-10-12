@@ -28,7 +28,7 @@ export function meterAt(meters: MeterChange[], bar: number): MeterChange {
   return m;
 }
 
-export function computeBars(song: Song): Bar[] {
+export function computeBars(song: { bars: number; meters: MeterChange[] }): Bar[] {
   const bars: Bar[] = [];
   let start = 0;
   for (let i = 0; i < song.bars; i++) {

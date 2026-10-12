@@ -1,14 +1,15 @@
 import { useEffect, useRef, useState } from 'react';
-import { useStore, selectedTrack, songInfo, trackPattern, uid, type Track } from '../store';
+import { useStore, selectedTrack, editInfo, trackPattern, uid, clipOf, type TrackView as Track } from '../store';
 import { hapsToNotes, kitPitch } from '../strudel/compile';
 import { engine } from '../strudel/engine';
 import { TPW, snapTick, snapLength, barAtTick, type Bar } from '../music/time';
 import { isBlackKey, pitchLabel, type Note } from '../music/codegen';
 import { laneLabel, laneValue, rowsFor, type KitLane, type TrackKind } from '../music/kit';
 import { inScale, isRoot, type Scale } from '../music/scale';
+import { stampChord } from '../music/chords';
 import { MeterPopover } from './MeterPopover';
 import { LaneEditor } from './LaneEditor';
-import { loopRange } from '../sync';
+import { play, playhead } from '../sync';
 
 const METER_H = 18;
 const RULER_H = 38;
@@ -65,6 +66,7 @@ interface View {
   lane: Lane;
   saved: Record<TrackKind, { rowH: number; scrollY: number }>;
   fold: boolean;
+  sectionId?: string;
 }
 
 type Drag =
@@ -144,7 +146,7 @@ export function PianoRoll() {
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       if (!fitted && v.w > 0) {
         fitted = true;
-        const { length } = songInfo(useStore.getState().project.song);
+        const { length } = editInfo(useStore.getState());
         v.ppt = (v.w - v.lane.keysW - 20) / length;
       }
     };
@@ -152,7 +154,7 @@ export function PianoRoll() {
     const draw = () => {
       const s = useStore.getState();
       const track = selectedTrack(s);
-      const { bars, length } = songInfo(s.project.song);
+      const { bars, length } = editInfo(s);
       const notes = track ? visibleNotes(track, length) : [];
       const scale = s.project.scale;
       const lane = laneFor(track, notes, s.fold, scale);
@@ -160,6 +162,11 @@ export function PianoRoll() {
         v.saved[v.lane.kind] = { rowH: v.rowH, scrollY: v.scrollY };
         v.rowH = v.saved[lane.kind].rowH;
         v.scrollY = v.saved[lane.kind].scrollY;
+      }
+      if (track && v.sectionId !== track.sectionId) {
+        v.sectionId = track.sectionId;
+        v.ppt = Math.max(0.01, (v.w - lane.keysW - 20) / length);
+        v.scrollTick = 0;
       }
       if (v.fold !== s.fold) {
         // jump to the notes when folding/unfolding
@@ -179,9 +186,11 @@ export function PianoRoll() {
       const iBot = Math.min(lane.rows.length - 1, Math.ceil((scrollY + gridH) / rowH));
       const t0 = scrollTick;
       const t1 = scrollTick + (w - KEYS_W) / ppt;
-      const pos = s.playing ? engine.position() * TPW : s.cursor;
+      const ph = s.playing ? playhead() : undefined;
+      const heard = ph && ph.sectionId === track?.sectionId ? ph.tick : undefined;
+      const pos = heard ?? s.cursor;
 
-      if (s.playing && engine.playing) {
+      if (heard !== undefined) {
         const px = xOf(pos);
         if (px > w - 40 || px < KEYS_W) v.scrollTick = Math.max(0, pos - (20 / ppt));
       }
@@ -239,6 +248,27 @@ export function PianoRoll() {
       ctx.fillRect(xOf(length), RULER_H, w, gridH);
       ctx.fillStyle = 'rgba(255,255,255,0.4)';
       ctx.fillRect(Math.round(xOf(length)), RULER_H, 1, gridH);
+
+      // other tracks' notes in this section, faint, for writing parts against each other
+      if (s.ghosts && track && !drums) {
+        for (const other of s.project.tracks) {
+          if (other.id === track.id || other.kind !== 'notes') continue;
+          ctx.strokeStyle = other.color;
+          ctx.fillStyle = other.color;
+          for (const n of clipOf(other, track.sectionId).notes) {
+            const x = xOf(n.start);
+            const nw = Math.max(2, n.dur * ppt - 1);
+            if (x > w || x + nw < KEYS_W || !lane.index.has(n.pitch)) continue;
+            const y = yOf(n.pitch);
+            if (y > h || y + rowH < RULER_H) continue;
+            ctx.globalAlpha = 0.1;
+            ctx.fillRect(x + 0.5, y + 1, nw, rowH - 2);
+            ctx.globalAlpha = 0.45;
+            ctx.strokeRect(x + 1, y + 1.5, nw - 1, rowH - 3);
+          }
+        }
+        ctx.globalAlpha = 1;
+      }
 
       // notes
       const ghost = track?.mode === 'code';
@@ -303,7 +333,7 @@ export function PianoRoll() {
       }
 
       // playhead
-      ctx.fillStyle = s.playing ? '#ffffff' : '#f5a524';
+      ctx.fillStyle = heard !== undefined ? '#ffffff' : '#f5a524';
       ctx.fillRect(Math.round(xOf(pos)), RULER_H, 1, gridH + VEL_H);
       ctx.restore();
 
@@ -420,7 +450,7 @@ export function PianoRoll() {
       }
       // cursor marker
       const cx = xOf(pos);
-      ctx.fillStyle = s.playing ? '#fff' : '#f5a524';
+      ctx.fillStyle = heard !== undefined ? '#fff' : '#f5a524';
       ctx.beginPath();
       ctx.moveTo(cx - 5, RULER_H - 8);
       ctx.lineTo(cx + 5, RULER_H - 8);
@@ -486,17 +516,24 @@ export function PianoRoll() {
     const ctxState = () => {
       const s = useStore.getState();
       const track = selectedTrack(s);
-      const info = songInfo(s.project.song);
+      const info = editInfo(s);
       return { s, track, ...info };
     };
 
     /** Adds a note in draw mode unless one already starts on this cell. */
+    /** Pitches drawn for a click on `pitch`: a chord when the chord stamp is on. */
+    const stamped = (track: Track, pitch: number) =>
+      track.kind === 'notes' ? stampChord(pitch, useStore.getState().chordStamp, useStore.getState().project.scale) : [pitch];
+
+    /** Adds a note (or stamped chord) in draw mode unless one already starts on this cell. */
     const paintCell = (pitch: number, start: number) => {
       const { s, track, bars, length } = ctxState();
       if (!track || pitch === undefined || start >= length) return;
-      if (track.notes.some((n) => n.pitch === pitch && n.start === start)) return;
       const dur = newNoteLength(track, s.snap, bars, start, lastLen.current);
-      s.setNotes(track.id, [...track.notes, { id: uid(), pitch, start, dur, vel: useStore.getState().velocity }], false);
+      const fresh = stamped(track, pitch)
+        .filter((p) => !track.notes.some((n) => n.pitch === p && n.start === start))
+        .map((p) => ({ id: uid(), pitch: p, start, dur, vel: s.velocity }));
+      if (fresh.length) s.setNotes(track.id, [...track.notes, ...fresh], false);
     };
 
     /** Sets velocities along the stroke (x0,y0)→(x1,y1) in the velocity lane. */
@@ -640,7 +677,7 @@ export function PianoRoll() {
         const pitch = pitchAt(y);
         s.checkpoint();
         paintCell(pitch, start);
-        preview(track, pitch);
+        stamped(track, pitch).forEach((p) => preview(track, p));
         drag.current = { kind: 'paint', pitch, last: start, free: e.altKey };
         return;
       }
@@ -651,12 +688,13 @@ export function PianoRoll() {
           track.kind === 'kit' || s.draw
             ? newNoteLength(track, s.snap, bars, start, lastLen.current)
             : Math.max(snapLength(s.snap, bars, start), lastLen.current);
-        const n: Note = { id: uid(), pitch: pitchAt(y), start, dur, vel: 0.8 };
+        const chord: Note[] = stamped(track, pitchAt(y)).map((pitch) => ({ id: uid(), pitch, start, dur, vel: s.velocity }));
+        const n = chord[0];
         s.checkpoint();
-        s.setNotes(track.id, [...notes, n], false);
-        s.select(new Set([n.id]));
-        preview(track, n.pitch, n.vel);
-        drag.current = { kind: 'resize', anchor: n, origs: [n], x0: xOf(start + dur) };
+        s.setNotes(track.id, [...notes, ...chord], false);
+        s.select(new Set(chord.map((c) => c.id)));
+        chord.forEach((c) => preview(track, c.pitch, c.vel));
+        drag.current = { kind: 'resize', anchor: n, origs: chord, x0: xOf(start + dur) };
         return;
       }
 
@@ -791,7 +829,7 @@ export function PianoRoll() {
         s.set({ cursor: tick });
         if (s.playing) {
           engine.stop();
-          engine.play(tick / TPW, loopRange());
+          play();
         }
       }
     };
@@ -813,7 +851,7 @@ export function PianoRoll() {
 
   const fit = () => {
     const v = view.current;
-    const { length } = songInfo(useStore.getState().project.song);
+    const { length } = editInfo(useStore.getState());
     v.ppt = (v.w - v.lane.keysW - 20) / length;
     v.scrollTick = 0;
   };

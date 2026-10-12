@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { useStore, selectedTrack, uid, songInfo } from './store';
+import { useStore, selectedTrack, uid, editInfo } from './store';
 import { initEngine } from './strudel/engine';
 import { startSync } from './sync';
 import { Transport, togglePlay } from './components/Transport';
@@ -7,9 +7,11 @@ import { TrackList } from './components/TrackList';
 import { PianoRoll, preview, snapLength } from './components/PianoRoll';
 import { CodePanel } from './components/CodePanel';
 import { RollToolbar } from './components/RollToolbar';
+import { ArrangementBar } from './components/ArrangementBar';
 import { CollapsedBar, Splitter, usePane } from './components/Panes';
 import type { Note } from './music/codegen';
 import { rowsFor } from './music/kit';
+import { scaleStep } from './music/transforms';
 import * as live from './live';
 
 let clipboard: Note[] = [];
@@ -83,13 +85,15 @@ function handleKey(e: KeyboardEvent) {
     e.preventDefault();
     const rows = rowsFor(track);
     const d = (key === 'arrowup' ? -1 : 1) * (e.shiftKey && track.kind === 'notes' ? 12 : 1);
-    const shift = (p: number) => rows[rows.indexOf(p) + d];
+    const scale = s.project.scale;
+    const shift = (p: number) =>
+      track.kind === 'notes' && scale && !e.shiftKey ? scaleStep(p, -d, scale) : rows[rows.indexOf(p) + d];
     if (sel.some((n) => shift(n.pitch) === undefined)) return;
     s.setNotes(track.id, track.notes.map((n) => (s.selection.has(n.id) ? { ...n, pitch: shift(n.pitch) } : n)));
     preview(track, shift(sel[0].pitch), sel[0].vel);
   } else if ((key === 'arrowleft' || key === 'arrowright') && sel.length) {
     e.preventDefault();
-    const { bars } = songInfo(s.project.song);
+    const { bars } = editInfo(s);
     const step = snapLength(s.snap, bars, sel[0].start) * (key === 'arrowleft' ? -1 : 1);
     if (sel.some((n) => n.start + step < 0)) return;
     s.setNotes(track.id, track.notes.map((n) => (s.selection.has(n.id) ? { ...n, start: n.start + step } : n)));
@@ -149,6 +153,7 @@ export function App() {
           </>
         )}
         <div className="editor-col">
+          <ArrangementBar />
           <RollToolbar />
           <PianoRoll />
         </div>

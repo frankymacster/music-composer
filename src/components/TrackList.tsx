@@ -1,8 +1,9 @@
 import { useState } from 'react';
-import { useStore, COLORS, type Track } from '../store';
+import { useStore, COLORS, trackView, type Track } from '../store';
 import { SOUNDFONTS, SYNTHS, soundLabel } from '../sounds';
 import { enableMidi } from '../strudel/engine';
 import { DRUM_BANKS, isStandardDrum, parseSample } from '../music/kit';
+import { MODIFIERS, modifierDef, type ModifierType } from '../music/modifiers';
 
 function OutputSelect({ track }: { track: Track }) {
   const update = useStore((s) => s.updateTrack);
@@ -111,11 +112,63 @@ function KitPreset({ track }: { track: Track }) {
   );
 }
 
+/** Live Strudel transforms on the whole track (swing, stutter, echo…). */
+function Modifiers({ track }: { track: Track }) {
+  const { addModifier, updateModifier, removeModifier, checkpoint } = useStore.getState();
+  const mods = track.modifiers ?? [];
+  const available = (Object.keys(MODIFIERS) as ModifierType[]).filter((t) => {
+    const kinds = modifierDef(t).kinds;
+    return !kinds || kinds.includes(track.kind);
+  });
+  return (
+    <div className="mods" onClick={(e) => e.stopPropagation()}>
+      {mods.map((m) => {
+        const def = modifierDef(m.type);
+        return (
+          <div key={m.id} className={`mod ${m.enabled ? '' : 'off'}`}>
+            <input
+              type="checkbox"
+              checked={m.enabled}
+              onChange={(e) => updateModifier(track.id, m.id, { enabled: e.target.checked })}
+              title="Enable"
+            />
+            <span className="mod-label" title={def.audioOnly ? 'Audio effect: no effect on MIDI out' : undefined}>
+              {def.label}
+            </span>
+            <input
+              type="range"
+              min={def.min}
+              max={def.max}
+              step={def.step}
+              value={m.amount}
+              onPointerDown={checkpoint}
+              onChange={(e) => updateModifier(track.id, m.id, { amount: +e.target.value }, false)}
+            />
+            <span className="mod-value">{def.format(m.amount)}</span>
+            <button className="mini" onClick={() => removeModifier(track.id, m.id)} title="Remove">
+              ×
+            </button>
+          </div>
+        );
+      })}
+      <select value="" onChange={(e) => e.target.value && addModifier(track.id, e.target.value as ModifierType)} title="Add a live Strudel transform to this track">
+        <option value="">+ Modifier…</option>
+        {available.map((t) => (
+          <option key={t} value={t}>
+            {modifierDef(t).label}
+          </option>
+        ))}
+      </select>
+    </div>
+  );
+}
+
 function TrackRow({ track, selected }: { track: Track; selected: boolean }) {
   const update = useStore((s) => s.updateTrack);
   const remove = useStore((s) => s.removeTrack);
   const set = useStore((s) => s.set);
   const [editing, setEditing] = useState(false);
+  const mode = useStore((s) => trackView(track, s.selectedSectionId).mode);
 
   return (
     <div className={`track ${selected ? 'selected' : ''}`} onClick={() => set({ selectedTrackId: track.id })} style={{ '--c': track.color } as React.CSSProperties}>
@@ -145,7 +198,9 @@ function TrackRow({ track, selected }: { track: Track; selected: boolean }) {
           </span>
         )}
         {track.kind === 'kit' && <span className="badge kit">kit</span>}
-        <span className={`badge ${track.mode}`}>{track.mode}</span>
+        <span className={`badge ${mode}`} title="Mode of this track's clip in the selected section">
+          {mode}
+        </span>
         <button
           className={`toggle ${track.mute ? 'on mute' : ''}`}
           title="Mute"
@@ -178,6 +233,7 @@ function TrackRow({ track, selected }: { track: Track; selected: boolean }) {
         </button>
       </div>
       <OutputSelect track={track} />
+      <Modifiers track={track} />
     </div>
   );
 }

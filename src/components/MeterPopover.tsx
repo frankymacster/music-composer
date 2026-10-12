@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
-import { useStore } from '../store';
+import { useStore, selectedSection } from '../store';
 import { meterAt } from '../music/time';
 
 const DENS = [1, 2, 4, 8, 16, 32];
 
 export function MeterPopover({ bar, x, onClose }: { bar: number; x: number; onClose: () => void }) {
-  const song = useStore((s) => s.project.song);
+  const song = useStore(selectedSection);
   const setMeter = useStore((s) => s.setMeter);
   const current = meterAt(song.meters, bar);
   const [num, setNum] = useState(current.num);

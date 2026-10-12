@@ -5,6 +5,7 @@ vi.mock('./strudel/engine', () => ({
   engine: {
     rawNow: () => clock.raw,
     songPos: (raw: number) => raw,
+    tagAt: () => undefined,
     loop: { start: 0, len: 4 },
     preview: () => {},
     midiNoteOn: () => {},
@@ -14,7 +15,7 @@ vi.mock('./strudel/engine', () => ({
 }));
 
 const { baseScope } = await import('./strudel/scope');
-const { useStore } = await import('./store');
+const { useStore, selectedTrack } = await import('./store');
 const live = await import('./live');
 const { TPW } = await import('./music/time');
 
@@ -31,7 +32,7 @@ beforeEach(() => {
   live.startTake();
   clock.raw = undefined;
 });
-const notes = () => useStore.getState().project.tracks.find((t) => t.id === trackId)!.notes.map(({ pitch, start, dur }) => ({ pitch, start, dur }));
+const notes = () => selectedTrack(useStore.getState())!.notes.map(({ pitch, start, dur }) => ({ pitch, start, dur }));
 
 describe('live input', () => {
   it('step input writes chords at the cursor and advances it', () => {

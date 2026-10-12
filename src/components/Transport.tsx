@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
-import { useStore, songInfo, migrate, type Project } from '../store';
+import { useStore, editInfo, migrate, selectedSection, selectedTrack, findSection } from '../store';
 import { engine, enableMidi, onMidiChange } from '../strudel/engine';
-import { loopRange, countIn } from '../sync';
+import { play, playhead } from '../sync';
+import { sectionInfo } from '../music/arrangement';
 import * as live from '../live';
 import { ROOTS } from '../music/scale';
 import { TPW, barAtTick } from '../music/time';
@@ -16,14 +17,14 @@ export async function togglePlay() {
     s.set({ playing: false });
   } else {
     live.startTake();
-    await engine.play(s.cursor / TPW, loopRange(), s.armed && s.countIn ? countIn(s.cursor) : undefined);
     s.set({ playing: true });
+    await play();
   }
 }
 
 function LiveControls() {
   const s = useStore();
-  const track = s.project.tracks.find((t) => t.id === s.selectedTrackId);
+  const track = selectedTrack(s);
   const [count, setCount] = useState(live.capturable());
   useEffect(() => live.onLiveChange(() => setCount(live.capturable())), []);
   useEffect(() => setCount(live.capturable()), [s.selectedTrackId]);
@@ -101,14 +102,17 @@ function Position() {
     const tick = () => {
       raf = requestAnimationFrame(tick);
       const s = useStore.getState();
-      const { bars } = songInfo(s.project.song);
-      const t = s.playing ? engine.position() * TPW : s.cursor;
-      const bar = barAtTick(bars, t);
+      const ph = s.playing ? playhead() : undefined;
+      const section = ph ? findSection(s.project, ph.sectionId) : selectedSection(s);
+      const t = ph ? ph.tick : s.cursor;
+      const bar = barAtTick(sectionInfo(section).bars, t);
       const beatLen = TPW / bar.den;
       const beat = Math.floor((t - bar.start) / beatLen) + 1;
       const sixteenth = Math.floor(((t - bar.start) % beatLen) / (TPW / 16)) + 1;
       if (ref.current)
-        ref.current.textContent = engine.countingIn() ? 'count-in…' : `${bar.index + 1}.${beat}.${sixteenth}  ${bar.num}/${bar.den}`;
+        ref.current.textContent = engine.countingIn()
+          ? 'count-in…'
+          : `${section.name} ${bar.index + 1}.${beat}.${sixteenth}  ${bar.num}/${bar.den}`;
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
@@ -118,7 +122,7 @@ function Position() {
 
 export function Transport() {
   const s = useStore();
-  const { song } = s.project;
+  const section = selectedSection(s);
   const [midiState, setMidiState] = useState<'off' | 'on' | 'error'>('off');
 
   const enable = async () => {
@@ -143,7 +147,7 @@ export function Transport() {
         <button
           className={`toggle-btn ${s.loop.enabled ? 'on' : ''}`}
           onClick={() => {
-            const { bars } = songInfo(song);
+            const { bars } = editInfo(s);
             const endBar = Math.min(s.loop.endBar, bars.length);
             s.set({ loop: { ...s.loop, enabled: !s.loop.enabled, endBar: Math.max(endBar, s.loop.startBar + 1) } });
           }}
@@ -152,16 +156,28 @@ export function Transport() {
           ⟳ Loop
         </button>
         <Position />
+        <span className="segmented" title="Section: loop the section being edited (switching sections waits for the next bar). Song: play the arrangement.">
+          <button className={s.playMode === 'section' ? 'on' : ''} onClick={() => s.set({ playMode: 'section' })}>
+            Section
+          </button>
+          <button className={s.playMode === 'song' ? 'on' : ''} onClick={() => s.set({ playMode: 'song' })}>
+            Song
+          </button>
+        </span>
+        {s.playMode === 'song' && (
+          <button className={`toggle-btn ${s.follow ? 'on' : ''}`} onClick={() => s.set({ follow: !s.follow })} title="Show the section being played">
+            Follow
+          </button>
+        )}
       </div>
       <LiveControls />
       <div className="group">
         <label>
-          BPM <NumberField value={song.bpm} min={20} max={400} onCommit={s.setBpm} />
+          BPM <NumberField value={s.project.bpm} min={20} max={400} onCommit={s.setBpm} />
         </label>
         <label>
-          Bars <NumberField value={song.bars} min={1} max={512} onCommit={s.setBars} width={46} />
+          {section.name} bars <NumberField value={section.bars} min={1} max={512} onCommit={s.setBars} width={46} />
         </label>
-        <span className="hint">Time signatures: click the Meter strip above the bars</span>
       </div>
       <div className="group">
         <button onClick={s.undo} disabled={!s.past.length} title="Undo (⌘Z)">
@@ -179,8 +195,8 @@ export function Transport() {
         <button
           onClick={async () => {
             try {
-              const p = JSON.parse(await openFile('.json,application/json')) as Project;
-              if (p?.version !== 1 || !Array.isArray(p.tracks)) throw new Error('Not a Music Composer project');
+              const p = JSON.parse(await openFile('.json,application/json'));
+              if (![1, 2].includes(p?.version) || !Array.isArray(p.tracks)) throw new Error('Not a Music Composer project');
               s.setProject(migrate(p));
             } catch (e) {
               alert(e instanceof Error ? e.message : String(e));

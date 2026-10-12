@@ -1,10 +1,13 @@
-import type { Project, Track } from './store';
-import { songInfo } from './store';
+import { clipOf, songTimeline, type Project, type Track } from './store';
+import { sectionInfo } from './music/arrangement';
 import { TPW } from './music/time';
 import { laneKey } from './music/kit';
+import { modifiersCode } from './music/modifiers';
 
-const outputSuffix = (t: Track): string => {
+const outputSuffix = (t: Track, bpm: number): string => {
   const parts: string[] = [];
+  const mods = modifiersCode(t.modifiers, bpm);
+  if (mods) parts.push(mods);
   if (t.output.type === 'synth') parts.push(`.s("${t.output.sound}")`);
   if (t.output.type === 'midi' && t.kind === 'kit') {
     const notes = JSON.stringify(Object.fromEntries((t.lanes ?? []).map((l) => [laneKey(l), l.note])));
@@ -15,21 +18,57 @@ const outputSuffix = (t: Track): string => {
   return parts.join('');
 };
 
+const fmt = (x: number) => String(+x.toFixed(4));
+
+/** camelCase JS identifier from free text. */
+function ident(text: string): string {
+  const words = text.replace(/[^A-Za-z0-9]+/g, ' ').trim().split(/\s+/).filter(Boolean);
+  const id = words.map((w, i) => (i ? w[0].toUpperCase() + w.slice(1) : w.toLowerCase())).join('') || 'x';
+  return /^[0-9]/.test(id) ? `_${id}` : id;
+}
+
+const withSuffix = (body: string, suffix: string) =>
+  !suffix ? body : body.includes('//') ? `(${body}\n)${suffix}` : `${body}\n  ${suffix}`;
+
+/** The whole project as one Strudel program (one `$:` per track, sections combined with `arrange`). */
 export function songCode(project: Project): string {
-  const { song, tracks } = project;
-  const { length } = songInfo(song);
-  const meters = song.meters.map((m) => `bar ${m.bar + 1}: ${m.num}/${m.den}`).join(' · ');
-  const anySolo = tracks.some((t) => t.solo);
+  const tl = songTimeline(project);
+  const anySolo = project.tracks.some((t) => t.solo);
+  const used = project.sections.filter((s) => project.arrangement.includes(s.id));
+  const describe = used
+    .map((s) => `${s.name}: ${s.bars} bars ${s.meters.map((m) => `${m.num}/${m.den}`).join('→')}`)
+    .join(' · ');
   const lines = [
     '// Music Composer · 1 cycle = 1 whole note',
-    `// ${song.bars} bars (${+(length / TPW).toFixed(4)} cycles) · ${meters}`,
-    `setcpm(${song.bpm}/4)`,
+    `// ${describe}`,
+    `// Arrangement: ${tl.instances.map((i) => i.section.name).join(' → ') || '(empty)'} · ${fmt(tl.length / TPW)} cycles`,
+    `setcpm(${project.bpm}/4)`,
   ];
-  for (const t of tracks) {
+
+  const names = new Set<string>();
+  const unique = (base: string) => {
+    let name = base;
+    for (let i = 2; names.has(name); i++) name = `${base}${i}`;
+    names.add(name);
+    return name;
+  };
+
+  for (const t of project.tracks) {
     const muted = t.mute || (anySolo && !t.solo);
-    const suffix = outputSuffix(t);
-    const body = suffix && t.code.includes('//') ? `(${t.code}\n)${suffix}` : suffix ? `${t.code}\n  ${suffix}` : t.code;
-    lines.push('', `// ${t.name}`, `${muted ? '_' : ''}$: ${body}`);
+    const label = `${muted ? '_' : ''}$:`;
+    lines.push('', `// ${t.name}`);
+    if (tl.instances.length === 1) {
+      lines.push(`${label} ${withSuffix(clipOf(t, tl.instances[0].section.id).code, outputSuffix(t, project.bpm))}`);
+      continue;
+    }
+    const vars = new Map<string, string>();
+    for (const sec of used) {
+      const name = unique(`${ident(t.name)}_${ident(sec.name)}`);
+      vars.set(sec.id, name);
+      lines.push(`const ${name} = ${clipOf(t, sec.id).code}`);
+    }
+    const parts = tl.instances.map((i) => `[${fmt(sectionInfo(i.section).length / TPW)}, ${vars.get(i.section.id)}]`);
+    lines.push(`${label} ${withSuffix(`arrange(${parts.join(', ')})`, outputSuffix(t, project.bpm))}`);
   }
   return lines.join('\n') + '\n';
 }

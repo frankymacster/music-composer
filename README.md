@@ -22,6 +22,27 @@ Web MIDI needs Chrome, Edge or Firefox (not Safari).
   Typing a new sample into grid-shaped code adds a lane for it. Web MIDI sends each lane's note (default ch 10).
 - Playback stacks all tracks, then `.ribbon(loopStart, loopLen)` for song/loop-region looping.
 
+## Sections and arrangement
+
+- **Sections** (Verse, Chorus…) each have their own length and time signatures; every track has one clip per section.
+  The piano roll and code editor work on the selected section. **+ Section**, **⧉ Duplicate** (copies all clips),
+  double-click a chip to rename, **+** on a chip appends it to the song.
+- **Song** strip: the arrangement, blocks sized by length; drag to reorder, × to remove.
+- **Section** play mode loops the section being edited; clicking another section while playing launches it at the next
+  bar (scene-style). **Song** mode plays the arrangement; **Follow** keeps the editor on the section being heard.
+- Export: each track becomes `const track_section = …` per section and `arrange([4, verse], [4, chorus], …)`.
+
+## Writing faster
+
+- **Chords…** (instrument tracks): type `Am F C G`, `Dm7 G7 Cmaj7` or Roman numerals `vi IV I V` (in the Scale's key);
+  chords are voice-led, repeated to fill the section, optionally with a bass line written to another track.
+- **Chord** stamp: drawn notes become triads/7ths/sus4 — diatonic when a Scale is set.
+- **Transform…** on the selection (or all notes): reverse, invert, double/half speed, legato, strum, humanize, arpeggiate ↑↓↕.
+- **Euclid…**: a Euclidean rhythm (Strudel's `x(k,n)`) on a lane or pitch across the section.
+- **Modifiers** (per track, live, all sections): swing 8ths/16ths, drop notes, stutter, octave jumps, reverse every N
+  bars, echo, filter sweep — appended as Strudel code (`.swingBy(…)`, `.degradeBy(…)`, …) and visible in the export.
+- **Ghosts**: other instrument tracks' notes shown faintly in the roll. With a Scale set, ↑/↓ move notes by scale step.
+
 ## Playing and recording
 
 - **⌨ Keys** (M): the computer keyboard plays the selected track, Ableton-style. `A W S E D F T G Y H U J K O L P ;`

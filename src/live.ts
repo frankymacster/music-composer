@@ -1,4 +1,6 @@
-import { useStore, selectedTrack, songInfo, uid, type Track } from './store';
+import { useStore, selectedTrack, editInfo, findSection, trackView, uid, type Track } from './store';
+import { locateRaw } from './sync';
+import { sectionInfo } from './music/arrangement';
 import { engine, listenMidiInputs } from './strudel/engine';
 import { laneValue } from './music/kit';
 import { snapLength, snapTick, TPW } from './music/time';
@@ -20,7 +22,8 @@ interface Held {
   vel: number;
   /** rawNow() at note-on while playing. */
   startRaw?: number;
-  /** Song position (ticks) at note-on while playing. */
+  /** Section and tick inside it at note-on while playing. */
+  sectionId?: string;
   startTick?: number;
   /** Id of the note being recorded. */
   recId?: string;
@@ -33,6 +36,7 @@ interface Played {
   vel: number;
   startRaw: number;
   endRaw: number;
+  sectionId: string;
   startTick: number;
 }
 
@@ -88,22 +92,24 @@ export function noteOn(id: string, pitch: number, vel: number) {
 
   const h: Held = { trackId: track.id, pitch, vel };
   const raw = engine.rawNow();
-  const recordable = s.armed && track.mode === 'grid';
-  const { bars, length } = songInfo(s.project.song);
+  const { bars, length } = editInfo(s);
+  const at = raw !== undefined && raw >= 0 ? locateRaw(raw) : undefined;
 
-  if (raw !== undefined && raw >= 0) {
+  if (raw !== undefined && at) {
     h.startRaw = raw;
-    h.startTick = toGrid(engine.songPos(raw) * TPW);
-    if (recordable) {
+    h.sectionId = at.sectionId;
+    h.startTick = toGrid(at.tick);
+    const clip = trackView(track, at.sectionId);
+    if (s.armed && clip.mode === 'grid') {
       if (!takeCheckpointed) {
         s.checkpoint();
         takeCheckpointed = true;
       }
       const note: Note = { id: uid(), pitch, start: h.startTick, dur: TPW / 16, vel };
       h.recId = note.id;
-      s.setNotes(track.id, [...track.notes, note], false);
+      s.setNotes(track.id, [...clip.notes, note], false, at.sectionId);
     }
-  } else if (raw === undefined && recordable) {
+  } else if (raw === undefined && s.armed && track.mode === 'grid') {
     // step input: notes held together form a chord at the cursor
     const chordOpen = [...held.values()].some((x) => x.step);
     if (!chordOpen) {
@@ -111,7 +117,7 @@ export function noteOn(id: string, pitch: number, vel: number) {
       stepLen = s.snap > 1 || s.snap === 0 ? snapLength(s.snap, bars, s.cursor) : TPW / 16;
     }
     if (s.cursor < length) {
-      const fresh = useStore.getState().project.tracks.find((t) => t.id === track.id)!;
+      const fresh = selectedTrack(useStore.getState())!;
       const note: Note = { id: uid(), pitch, start: s.cursor, dur: stepLen, vel };
       s.setNotes(track.id, [...fresh.notes.filter((n) => !(n.pitch === pitch && n.start === s.cursor)), note], false);
     }
@@ -129,26 +135,35 @@ export function noteOff(id: string) {
   if (track) engine.midiNoteOff(track.output, h.pitch);
 
   const raw = engine.rawNow();
-  if (h.recId && track && raw !== undefined && h.startRaw !== undefined) {
-    const { bars } = songInfo(s.project.song);
+  if (h.recId && track && h.sectionId && raw !== undefined && h.startRaw !== undefined) {
+    const { bars } = sectionInfo(findSection(s.project, h.sectionId));
     const dur = Math.max(REC_GRID, toGrid((raw - h.startRaw) * TPW));
     s.setNotes(
       track.id,
-      track.notes.map((n) => {
+      trackView(track, h.sectionId).notes.map((n) => {
         if (n.id !== h.recId) return n;
         const start = s.inputQuantize && s.snap !== 1 ? snapTick(n.start, s.snap, bars, 'round') : n.start;
         return { ...n, start, dur };
       }),
       false,
+      h.sectionId,
     );
-  } else if (raw !== undefined && h.startRaw !== undefined && h.startTick !== undefined) {
-    played.push({ trackId: h.trackId, pitch: h.pitch, vel: h.vel, startRaw: h.startRaw, endRaw: raw, startTick: h.startTick });
+  } else if (raw !== undefined && h.startRaw !== undefined && h.startTick !== undefined && h.sectionId) {
+    played.push({
+      trackId: h.trackId,
+      pitch: h.pitch,
+      vel: h.vel,
+      startRaw: h.startRaw,
+      endRaw: raw,
+      sectionId: h.sectionId,
+      startTick: h.startTick,
+    });
     if (played.length > 2000) played = played.slice(-1000);
     changed();
   }
 
   if (h.step && ![...held.values()].some((x) => x.step)) {
-    const { length } = songInfo(s.project.song);
+    const { length } = editInfo(s);
     s.set({ cursor: Math.min(length, s.cursor + stepLen) });
   }
 }
@@ -168,25 +183,32 @@ export function startTake() {
  */
 export function capture(): number {
   const s = useStore.getState();
-  const track = selectedTrack(s);
-  if (!track || track.mode !== 'grid') return 0;
+  const track = s.project.tracks.find((t) => t.id === s.selectedTrackId);
+  if (!track) return 0;
   const mine = played.filter((p) => p.trackId === track.id);
   if (!mine.length) return 0;
   const anchor = engine.rawNow() ?? Math.max(...mine.map((p) => p.endRaw));
   const from = anchor - engine.loop.len;
-  const picked = mine.filter((p) => p.startRaw >= from);
+  const picked = mine.filter((p) => p.startRaw >= from && trackView(track, p.sectionId).mode === 'grid');
   if (!picked.length) return 0;
-  const { bars } = songInfo(s.project.song);
-  const notes: Note[] = picked.map((p) => {
-    const start = s.inputQuantize && s.snap !== 1 ? snapTick(p.startTick, s.snap, bars, 'round') : p.startTick;
-    return { id: uid(), pitch: p.pitch, start, dur: Math.max(REC_GRID, toGrid((p.endRaw - p.startRaw) * TPW)), vel: p.vel };
-  });
   s.checkpoint();
-  s.setNotes(track.id, [...track.notes, ...notes], false);
-  s.select(new Set(notes.map((n) => n.id)));
+  const added: string[] = [];
+  for (const sectionId of new Set(picked.map((p) => p.sectionId))) {
+    const { bars } = sectionInfo(findSection(s.project, sectionId));
+    const notes: Note[] = picked
+      .filter((p) => p.sectionId === sectionId)
+      .map((p) => {
+        const start = s.inputQuantize && s.snap !== 1 ? snapTick(p.startTick, s.snap, bars, 'round') : p.startTick;
+        return { id: uid(), pitch: p.pitch, start, dur: Math.max(REC_GRID, toGrid((p.endRaw - p.startRaw) * TPW)), vel: p.vel };
+      });
+    const current = useStore.getState().project.tracks.find((t) => t.id === track.id)!;
+    s.setNotes(track.id, [...trackView(current, sectionId).notes, ...notes], false, sectionId);
+    added.push(...notes.map((n) => n.id));
+  }
+  s.select(new Set(added));
   played = played.filter((p) => p.trackId !== track.id);
   changed();
-  return notes.length;
+  return added.length;
 }
 
 /** Computer keyboard handling; returns true when the key was used for playing. */

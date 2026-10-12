@@ -4,7 +4,9 @@ import { javascript } from '@codemirror/lang-javascript';
 import { StateEffect, StateField } from '@codemirror/state';
 import { Decoration, type DecorationSet } from '@codemirror/view';
 import { code2hash } from '@strudel/core';
-import { useStore, selectedTrack, compileCached, trackPattern, type Track } from '../store';
+import { useStore, selectedTrack, selectedSection, compileCached, trackPattern, type TrackView as Track } from '../store';
+import { playhead } from '../sync';
+import { TPW } from '../music/time';
 import { engine } from '../strudel/engine';
 import { songCode } from '../songCode';
 import { download } from '../files';
@@ -53,8 +55,9 @@ function useHapHighlight(ref: React.RefObject<ReactCodeMirrorRef | null>, track:
       if (!view || !track) return;
       let ranges: [number, number][] = [];
       const c = trackPattern(track);
-      if (engine.playing && c && view.state.doc.toString() === track.code) {
-        const pos = engine.position();
+      const ph = engine.playing ? playhead() : undefined;
+      if (ph && ph.sectionId === track.sectionId && c && view.state.doc.toString() === track.code) {
+        const pos = ph.tick / TPW;
         try {
           for (const hap of c.pattern.queryArc(pos, pos + 1e-4)) {
             if (!hap.whole || hap.whole.begin.valueOf() > pos) continue;
@@ -82,6 +85,8 @@ function TrackEditor({ track }: { track: Track }) {
   const [doc, setDoc] = useState(track.code);
   const sent = useRef(track.code);
   const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  /** Unapplied edit, flushed when switching track or section. */
+  const pendingCommit = useRef<(() => void) | undefined>(undefined);
   const ref = useRef<ReactCodeMirrorRef>(null);
   useHapHighlight(ref, track);
 
@@ -94,15 +99,18 @@ function TrackEditor({ track }: { track: Track }) {
 
   useEffect(() => {
     clearTimeout(timer.current);
+    pendingCommit.current?.();
+    pendingCommit.current = undefined;
     sent.current = track.code;
     setDoc(track.code);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [track.id]);
+  }, [track.id, track.sectionId]);
 
   const commit = (value: string) => {
     clearTimeout(timer.current);
+    pendingCommit.current = undefined;
     sent.current = value;
-    setCode(track.id, value);
+    setCode(track.id, value, track.sectionId);
   };
 
   const compiled = compileCached(track.code);
@@ -149,6 +157,7 @@ function TrackEditor({ track }: { track: Track }) {
           onChange={(value) => {
             setDoc(value);
             clearTimeout(timer.current);
+            pendingCommit.current = () => commit(value);
             timer.current = setTimeout(() => commit(value), 400);
           }}
         />
@@ -191,12 +200,13 @@ function SongView() {
 
 export function CodePanel({ onCollapse }: { onCollapse: () => void }) {
   const track = useStore(selectedTrack);
+  const section = useStore(selectedSection);
   const [tab, setTab] = useState<'track' | 'song'>('track');
   return (
     <div className="code-panel">
       <div className="tabs">
         <button className={tab === 'track' ? 'active' : ''} onClick={() => setTab('track')}>
-          {track ? track.name : 'Track'}
+          {track ? `${track.name} · ${section.name}` : 'Track'}
         </button>
         <button className={tab === 'song' ? 'active' : ''} onClick={() => setTab('song')}>
           Song
