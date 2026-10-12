@@ -1,20 +1,75 @@
 import { useEffect, useRef, useState } from 'react';
 import { useStore, songInfo, migrate, type Project } from '../store';
 import { engine, enableMidi, onMidiChange } from '../strudel/engine';
-import { loopRange } from '../sync';
-import { SNAPS, TPW, barAtTick } from '../music/time';
+import { loopRange, countIn } from '../sync';
+import * as live from '../live';
+import { ROOTS } from '../music/scale';
+import { TPW, barAtTick } from '../music/time';
 import { songCode } from '../songCode';
 import { download, openFile } from '../files';
 
 export async function togglePlay() {
   const s = useStore.getState();
   if (s.playing) {
+    live.releaseAll();
     engine.stop();
     s.set({ playing: false });
   } else {
-    await engine.play(s.cursor / TPW, loopRange());
+    live.startTake();
+    await engine.play(s.cursor / TPW, loopRange(), s.armed && s.countIn ? countIn(s.cursor) : undefined);
     s.set({ playing: true });
   }
+}
+
+function LiveControls() {
+  const s = useStore();
+  const track = s.project.tracks.find((t) => t.id === s.selectedTrackId);
+  const [count, setCount] = useState(live.capturable());
+  useEffect(() => live.onLiveChange(() => setCount(live.capturable())), []);
+  useEffect(() => setCount(live.capturable()), [s.selectedTrackId]);
+  const canRecord = track?.mode === 'grid';
+  return (
+    <div className="group">
+      <button
+        className={`rec ${s.armed ? 'on' : ''} ${s.armed && s.playing ? 'live' : ''}`}
+        onClick={() => s.set({ armed: !s.armed })}
+        disabled={!canRecord && !s.armed}
+        title={
+          canRecord
+            ? 'Record (F9). Playing: overdub into the selected track. Stopped: step input at the cursor.'
+            : 'Code tracks can\'t be recorded into — Bake to grid first'
+        }
+      >
+        ● Rec
+      </button>
+      <button className={`toggle-btn ${s.countIn ? 'on' : ''}`} onClick={() => s.set({ countIn: !s.countIn })} title="One-bar count-in when starting to record">
+        1 bar
+      </button>
+      <button className={`toggle-btn ${s.metronome ? 'on' : ''}`} onClick={() => s.set({ metronome: !s.metronome })} title="Metronome">
+        ♩ Click
+      </button>
+      <button className={`toggle-btn ${s.inputQuantize ? 'on' : ''}`} onClick={() => s.set({ inputQuantize: !s.inputQuantize })} title="Quantize recorded notes to the snap grid">
+        Q in
+      </button>
+      <button
+        onClick={() => live.capture()}
+        disabled={!count || !canRecord}
+        title="Capture: turn what you just played (without recording) into notes on the selected track"
+      >
+        ⤓ Capture{count ? ` (${count})` : ''}
+      </button>
+      <button
+        className={`toggle-btn ${s.keyboard ? 'on' : ''}`}
+        onClick={() => {
+          live.releaseAll();
+          s.set({ keyboard: !s.keyboard });
+        }}
+        title="Computer keyboard plays notes (M). A–; = notes, Z/X = octave, C/V = velocity"
+      >
+        ⌨ Keys{s.keyboard ? ` ${track?.kind === 'kit' ? 'kit' : ROOTS[0] + s.octave} · vel ${Math.round(s.velocity * 127)}` : ''}
+      </button>
+    </div>
+  );
 }
 
 function NumberField({ value, min, max, onCommit, width = 52 }: { value: number; min: number; max: number; onCommit: (v: number) => void; width?: number }) {
@@ -52,7 +107,8 @@ function Position() {
       const beatLen = TPW / bar.den;
       const beat = Math.floor((t - bar.start) / beatLen) + 1;
       const sixteenth = Math.floor(((t - bar.start) % beatLen) / (TPW / 16)) + 1;
-      if (ref.current) ref.current.textContent = `${bar.index + 1}.${beat}.${sixteenth}  ${bar.num}/${bar.den}`;
+      if (ref.current)
+        ref.current.textContent = engine.countingIn() ? 'count-in…' : `${bar.index + 1}.${beat}.${sixteenth}  ${bar.num}/${bar.den}`;
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
@@ -69,6 +125,7 @@ export function Transport() {
     try {
       const ports = await enableMidi();
       s.set({ midiPorts: ports });
+      live.listenMidi();
       setMidiState('on');
       onMidiChange((p) => useStore.getState().set({ midiPorts: p }));
     } catch (e) {
@@ -96,6 +153,7 @@ export function Transport() {
         </button>
         <Position />
       </div>
+      <LiveControls />
       <div className="group">
         <label>
           BPM <NumberField value={song.bpm} min={20} max={400} onCommit={s.setBpm} />
@@ -106,19 +164,6 @@ export function Transport() {
         <span className="hint">Time signatures: click the Meter strip above the bars</span>
       </div>
       <div className="group">
-        <label>
-          Snap
-          <select value={s.snap} onChange={(e) => s.set({ snap: +e.target.value })}>
-            {SNAPS.map((o) => (
-              <option key={o.label} value={o.ticks}>
-                {o.label}
-              </option>
-            ))}
-          </select>
-        </label>
-        <button className={`toggle-btn ${s.draw ? 'on' : ''}`} onClick={() => s.set({ draw: !s.draw })} title="Draw mode (B)">
-          ✎ Draw
-        </button>
         <button onClick={s.undo} disabled={!s.past.length} title="Undo (⌘Z)">
           ↶
         </button>

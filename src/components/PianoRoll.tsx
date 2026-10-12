@@ -2,9 +2,10 @@ import { useEffect, useRef, useState } from 'react';
 import { useStore, selectedTrack, songInfo, trackPattern, uid, type Track } from '../store';
 import { hapsToNotes, kitPitch } from '../strudel/compile';
 import { engine } from '../strudel/engine';
-import { TPW, snapTick, barAtTick, type Bar } from '../music/time';
+import { TPW, snapTick, snapLength, barAtTick, type Bar } from '../music/time';
 import { isBlackKey, pitchLabel, type Note } from '../music/codegen';
 import { laneLabel, laneValue, rowsFor, type KitLane, type TrackKind } from '../music/kit';
+import { inScale, isRoot, type Scale } from '../music/scale';
 import { MeterPopover } from './MeterPopover';
 import { LaneEditor } from './LaneEditor';
 import { loopRange } from '../sync';
@@ -31,16 +32,26 @@ const makeLane = (kind: TrackKind, rows: number[], keysW: number, kit: KitLane[]
   keysW,
   kit: new Map(kit.map((l) => [l.note, l])),
 });
-const NOTES_LANE = makeLane('notes', rowsFor({ kind: 'notes' }), 64);
-const kitLanes = new WeakMap<KitLane[], Lane>();
-function laneFor(track: Track | undefined): Lane {
-  if (track?.kind !== 'kit') return NOTES_LANE;
-  const lanes = track.lanes ?? [];
-  let lane = kitLanes.get(lanes);
-  if (!lane) {
-    lane = makeLane('kit', rowsFor(track), 132, lanes);
-    kitLanes.set(lanes, lane);
+const ALL_PITCHES = rowsFor({ kind: 'notes' });
+const NOTES_LANE = makeLane('notes', ALL_PITCHES, 64);
+export const keysWidth = (track: Track | undefined) => (track?.kind === 'kit' ? 132 : 64);
+
+let laneCache: { key: unknown[]; lane: Lane } | undefined;
+/** Rows shown for a track. Fold keeps rows with notes (plus scale rows when a scale is set). */
+function laneFor(track: Track | undefined, notes: Note[], fold: boolean, scale: Scale | undefined): Lane {
+  const key = [track?.kind, track?.lanes, fold && notes, fold && scale];
+  if (laneCache && key.every((k, i) => k === laneCache!.key[i])) return laneCache.lane;
+  const used = new Set(notes.map((n) => n.pitch));
+  let lane: Lane;
+  if (track?.kind === 'kit') {
+    const lanes = track.lanes ?? [];
+    const shown = fold && lanes.some((l) => used.has(l.note)) ? lanes.filter((l) => used.has(l.note)) : lanes;
+    lane = makeLane('kit', shown.map((l) => l.note), keysWidth(track), lanes);
+  } else {
+    const rows = fold ? ALL_PITCHES.filter((p) => used.has(p) || (scale && inScale(scale, p))) : [];
+    lane = rows.length ? makeLane('notes', rows, keysWidth(track)) : NOTES_LANE;
   }
+  laneCache = { key, lane };
   return lane;
 }
 
@@ -53,6 +64,7 @@ interface View {
   h: number;
   lane: Lane;
   saved: Record<TrackKind, { rowH: number; scrollY: number }>;
+  fold: boolean;
 }
 
 type Drag =
@@ -61,7 +73,10 @@ type Drag =
   | { kind: 'marquee'; x0: number; y0: number; x1: number; y1: number; base: Set<string> }
   | { kind: 'vel'; origs: Note[]; y0: number }
   | { kind: 'loop'; bar0: number; moved: boolean }
-  | { kind: 'keys'; lastPitch: number };
+  | { kind: 'keys'; lastPitch: number }
+  | { kind: 'paint'; pitch: number; last: number; free: boolean }
+  | { kind: 'erase' }
+  | { kind: 'velpaint'; lastX: number; lastY: number };
 
 const ghostCache = { key: '', notes: [] as Note[] };
 function visibleNotes(track: Track, length: number): Note[] {
@@ -75,7 +90,7 @@ function visibleNotes(track: Track, length: number): Note[] {
   return ghostCache.notes;
 }
 
-export const snapLength = (snap: number, bars: Bar[], at: number) => (snap === 0 ? barAtTick(bars, at).length : snap);
+export { snapLength };
 
 export function preview(track: Track, pitch: number, vel = 0.8) {
   if (track.kind === 'kit' && track.output.type !== 'midi') {
@@ -86,8 +101,9 @@ export function preview(track: Track, pitch: number, vel = 0.8) {
   engine.preview({ note: pitch, velocity: vel }, track.output);
 }
 
+/** Length of a drawn note: one grid step, or the last used length (kits: a 16th) when snap is off. */
 export const newNoteLength = (track: Track, snap: number, bars: Bar[], at: number, last: number) =>
-  track.kind === 'kit' ? (snap > 1 ? snapLength(snap, bars, at) : TPW / 16) : last;
+  snap !== 1 ? snapLength(snap, bars, at) : track.kind === 'kit' ? TPW / 16 : last;
 
 export function PianoRoll() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -99,6 +115,7 @@ export function PianoRoll() {
     w: 0,
     h: 0,
     lane: NOTES_LANE,
+    fold: false,
     saved: { notes: { rowH: 14, scrollY: (127 - 76) * 14 }, kit: { rowH: 24, scrollY: 0 } },
   });
   const drag = useRef<Drag | null>(null);
@@ -135,16 +152,25 @@ export function PianoRoll() {
     const draw = () => {
       const s = useStore.getState();
       const track = selectedTrack(s);
-      const lane = laneFor(track);
+      const { bars, length } = songInfo(s.project.song);
+      const notes = track ? visibleNotes(track, length) : [];
+      const scale = s.project.scale;
+      const lane = laneFor(track, notes, s.fold, scale);
       if (v.lane.kind !== lane.kind) {
         v.saved[v.lane.kind] = { rowH: v.rowH, scrollY: v.scrollY };
         v.rowH = v.saved[lane.kind].rowH;
         v.scrollY = v.saved[lane.kind].scrollY;
       }
+      if (v.fold !== s.fold) {
+        // jump to the notes when folding/unfolding
+        v.fold = s.fold;
+        const rows = notes.map((n) => lane.index.get(n.pitch)).filter((i): i is number => i !== undefined);
+        if (rows.length) v.scrollY = Math.max(0, (Math.min(...rows) - 2) * v.rowH);
+      }
       v.lane = lane;
       const KEYS_W = lane.keysW;
       const drums = lane.kind === 'kit';
-      const { bars, length } = songInfo(s.project.song);
+      const folded = !drums && lane.rows !== ALL_PITCHES;
       const { w, h, ppt, rowH, scrollTick, scrollY } = v;
       const gridH = h - RULER_H - VEL_H;
       const xOf = (t: number) => KEYS_W + (t - scrollTick) * ppt;
@@ -171,9 +197,14 @@ export function PianoRoll() {
       for (let i = iTop; i <= iBot; i++) {
         const p = lane.rows[i];
         const y = yOf(p);
-        ctx.fillStyle = (drums ? i % 2 : isBlackKey(p)) ? '#1c1d21' : '#232529';
+        const dark = drums ? i % 2 : scale ? !inScale(scale, p) : isBlackKey(p);
+        ctx.fillStyle = dark ? (scale && !drums ? '#18191c' : '#1c1d21') : '#232529';
         ctx.fillRect(KEYS_W, y, w, rowH);
-        if (drums ? true : p % 12 === 0) {
+        if (!drums && isRoot(scale, p)) {
+          ctx.fillStyle = 'rgba(245,165,36,0.07)';
+          ctx.fillRect(KEYS_W, y, w, rowH);
+        }
+        if (drums || folded || p % 12 === 0) {
           ctx.fillStyle = 'rgba(255,255,255,0.10)';
           ctx.fillRect(KEYS_W, y + rowH - 1, w, 1);
         }
@@ -210,7 +241,6 @@ export function PianoRoll() {
       ctx.fillRect(Math.round(xOf(length)), RULER_H, 1, gridH);
 
       // notes
-      const notes = track ? visibleNotes(track, length) : [];
       const ghost = track?.mode === 'code';
       const color = track?.color ?? '#888';
       for (const n of notes) {
@@ -338,8 +368,8 @@ export function PianoRoll() {
         }
         ctx.fillStyle = 'rgba(0,0,0,0.25)';
         ctx.fillRect(0, y + rowH - 1, KEYS_W, 1);
-        if (p % 12 === 0 && rowH >= 9) {
-          ctx.fillStyle = '#3a3d44';
+        if ((p % 12 === 0 || folded || isRoot(scale, p)) && rowH >= 9) {
+          ctx.fillStyle = isRoot(scale, p) ? '#b06d00' : '#3a3d44';
           ctx.font = '10px ui-sans-serif, system-ui';
           ctx.fillText(pitchLabel(p), KEYS_W - 28, y + rowH / 2 + 3.5);
         }
@@ -460,6 +490,36 @@ export function PianoRoll() {
       return { s, track, ...info };
     };
 
+    /** Adds a note in draw mode unless one already starts on this cell. */
+    const paintCell = (pitch: number, start: number) => {
+      const { s, track, bars, length } = ctxState();
+      if (!track || pitch === undefined || start >= length) return;
+      if (track.notes.some((n) => n.pitch === pitch && n.start === start)) return;
+      const dur = newNoteLength(track, s.snap, bars, start, lastLen.current);
+      s.setNotes(track.id, [...track.notes, { id: uid(), pitch, start, dur, vel: useStore.getState().velocity }], false);
+    };
+
+    /** Sets velocities along the stroke (x0,y0)→(x1,y1) in the velocity lane. */
+    const paintVelocity = (x0: number, y0: number, x1: number, y1: number) => {
+      const { s, track } = ctxState();
+      if (!track || track.mode !== 'grid') return;
+      const top = v.h - VEL_H + 6;
+      const velAt = (y: number) => Math.round(Math.max(0.01, Math.min(1, 1 - (y - top) / (VEL_H - 12))) * 100) / 100;
+      const [ax, ay, bx, by] = x0 <= x1 ? [x0, y0, x1, y1] : [x1, y1, x0, y0];
+      let changed = false;
+      const notes = track.notes.map((n) => {
+        const nx = xOf(n.start);
+        if (nx < ax - 3 || nx > bx + 3) return n;
+        if (s.selection.size && !s.selection.has(n.id)) return n;
+        const y = bx === ax ? by : ay + ((by - ay) * (nx - ax)) / (bx - ax);
+        const vel = velAt(y);
+        if (vel === n.vel) return n;
+        changed = true;
+        return { ...n, vel };
+      });
+      if (changed) s.setNotes(track.id, notes, false);
+    };
+
     const onWheel = (e: WheelEvent) => {
       e.preventDefault();
       const { x } = local(e);
@@ -519,6 +579,12 @@ export function PianoRoll() {
       const notes = track.notes;
 
       if (y >= gridBottom) {
+        if (s.draw || e.altKey) {
+          s.checkpoint();
+          drag.current = { kind: 'velpaint', lastX: x, lastY: y };
+          paintVelocity(x, y, x, y);
+          return;
+        }
         const near = notes.filter((n) => Math.abs(xOf(n.start) - x) <= 4);
         if (!near.length) return;
         const targets = near.some((n) => s.selection.has(n.id)) ? notes.filter((n) => s.selection.has(n.id)) : near;
@@ -531,6 +597,7 @@ export function PianoRoll() {
       if (hit && s.draw && !hit.edge) {
         s.checkpoint();
         s.setNotes(track.id, notes.filter((n) => n.id !== hit.note.id), false);
+        drag.current = { kind: 'erase' };
         return;
       }
       if (hit && e.detail === 2 && !hit.edge) {
@@ -568,7 +635,17 @@ export function PianoRoll() {
         return;
       }
 
-      if (s.draw || e.detail === 2) {
+      if (s.draw) {
+        const start = Math.max(0, snapTick(tickAt(x), s.snap, bars, 'floor'));
+        const pitch = pitchAt(y);
+        s.checkpoint();
+        paintCell(pitch, start);
+        preview(track, pitch);
+        drag.current = { kind: 'paint', pitch, last: start, free: e.altKey };
+        return;
+      }
+
+      if (e.detail === 2) {
         const start = Math.max(0, snapTick(tickAt(x), s.snap, bars, 'floor'));
         const dur =
           track.kind === 'kit' || s.draw
@@ -632,6 +709,33 @@ export function PianoRoll() {
           if (n.start < tb && n.start + n.dur > ta && r >= ra && r <= rb) sel.add(n.id);
         }
         s.select(sel);
+        return;
+      }
+      if (d.kind === 'paint') {
+        const pitch = d.free ? pitchAt(y) : d.pitch;
+        const target = Math.max(0, snapTick(tickAt(x), s.snap, bars, 'floor'));
+        if (target === d.last && pitch === d.pitch) return;
+        const len = (t: number) => newNoteLength(track, s.snap, bars, t, lastLen.current);
+        const [from, to] = target > d.last ? [d.last, target] : [target, d.last];
+        for (let t = from; t <= to; ) {
+          paintCell(pitch, t);
+          const next = snapTick(t + len(t), s.snap, bars, 'floor');
+          t = next > t ? next : t + len(t);
+        }
+        if (pitch !== d.pitch) preview(track, pitch);
+        d.last = target;
+        d.pitch = pitch;
+        return;
+      }
+      if (d.kind === 'erase') {
+        const hit = hitNote(x, y, track.notes);
+        if (hit) s.setNotes(track.id, track.notes.filter((n) => n.id !== hit.note.id), false);
+        return;
+      }
+      if (d.kind === 'velpaint') {
+        paintVelocity(d.lastX, d.lastY, x, y);
+        d.lastX = x;
+        d.lastY = y;
         return;
       }
       if (d.kind === 'vel') {
@@ -734,7 +838,7 @@ export function PianoRoll() {
         </button>
       )}
       {laneEdit && track?.kind === 'kit' && (
-        <LaneEditor track={track} laneId={laneEdit.laneId} top={laneEdit.y} left={laneFor(track).keysW + 6} onClose={() => setLaneEdit(null)} />
+        <LaneEditor track={track} laneId={laneEdit.laneId} top={laneEdit.y} left={keysWidth(track) + 6} onClose={() => setLaneEdit(null)} />
       )}
     </div>
   );

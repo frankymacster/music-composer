@@ -1,7 +1,8 @@
 import { create } from 'zustand';
 import { generateTrackCode, type Note } from './music/codegen';
 import { isGridCode } from './music/canonical';
-import { computeBars, songLength, type MeterChange, type Song, TPW } from './music/time';
+import { computeBars, songLength, snapTick, type MeterChange, type Song, TPW } from './music/time';
+import type { Scale } from './music/scale';
 import { compile, detectKind, fitsGrid, hapsToNotes, kitPitch, kitSounds, notePitch, type Compiled } from './strudel/compile';
 import {
   STANDARD_DRUMS,
@@ -37,6 +38,7 @@ export interface Project {
   version: 1;
   song: Song;
   tracks: Track[];
+  scale?: Scale;
 }
 
 export interface LoopRange {
@@ -200,6 +202,8 @@ function loadSaved(): Project | undefined {
   }
 }
 
+type FunctionKeys<T> = { [K in keyof T]: T[K] extends (...args: never[]) => unknown ? K : never }[keyof T];
+
 interface State {
   project: Project;
   past: Project[];
@@ -213,6 +217,16 @@ interface State {
   ready: boolean;
   playing: boolean;
   midiPorts: string[];
+  fold: boolean;
+  quantizeStrength: number;
+  /** Computer keyboard plays notes (Ableton's "M" mode). */
+  keyboard: boolean;
+  octave: number;
+  velocity: number;
+  armed: boolean;
+  metronome: boolean;
+  countIn: boolean;
+  inputQuantize: boolean;
 
   checkpoint(): void;
   undo(): void;
@@ -235,9 +249,12 @@ interface State {
   setNotes(id: string, notes: Note[], history?: boolean): void;
   setCode(id: string, code: string): void;
   bake(id: string): void;
+  setScale(scale: Scale | undefined): void;
+  /** Quantizes note starts in `ids` (all notes when empty) to the current snap. */
+  quantize(trackId: string, ids: Set<string>): void;
 
   select(ids: Set<string>): void;
-  set(patch: Partial<Pick<State, 'selectedTrackId' | 'snap' | 'draw' | 'loop' | 'cursor' | 'ready' | 'playing' | 'midiPorts'>>): void;
+  set(patch: Partial<Omit<State, 'project' | 'past' | 'future' | 'selection' | FunctionKeys<State>>>): void;
 }
 
 const initial = loadSaved() ?? demoProject();
@@ -269,6 +286,15 @@ export const useStore = create<State>((set, get) => {
     ready: false,
     playing: false,
     midiPorts: [],
+    fold: false,
+    quantizeStrength: 1,
+    keyboard: false,
+    octave: 4,
+    velocity: 0.8,
+    armed: false,
+    metronome: false,
+    countIn: true,
+    inputQuantize: false,
 
     checkpoint: () => set({ past: [...get().past.slice(-199), get().project], future: [] }),
     undo: () => {
@@ -411,6 +437,28 @@ export const useStore = create<State>((set, get) => {
       get().checkpoint();
       get().updateTrack(id, { kind, output, lanes }, false);
       get().setNotes(id, notes, false);
+    },
+
+    setScale: (scale) => commit({ ...get().project, scale }),
+    quantize: (trackId, ids) => {
+      const { snap, quantizeStrength, project } = get();
+      if (snap === 1) return;
+      const { bars } = songInfo(project.song);
+      mapTrack(trackId, (t) =>
+        t.mode !== 'grid'
+          ? t
+          : regen(
+              {
+                ...t,
+                notes: t.notes.map((n) => {
+                  if (ids.size && !ids.has(n.id)) return n;
+                  const target = snapTick(n.start, snap, bars, 'round');
+                  return { ...n, start: Math.max(0, Math.round(n.start + (target - n.start) * quantizeStrength)) };
+                }),
+              },
+              project.song,
+            ),
+      );
     },
 
     select: (selection) => set({ selection }),

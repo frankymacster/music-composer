@@ -330,6 +330,7 @@ button.icon {
 .roll {
   flex: 1;
   min-width: 0;
+  min-height: 0;
   position: relative;
   overflow: visible;
   min-height: 0;
@@ -477,4 +478,49 @@ button.danger:hover {
   top: 7px;
   font-size: 11px;
   padding: 2px 8px;
+}
+
+.editor-col {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.roll-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+  padding: 5px 10px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+}
+.roll-toolbar label {
+  display: flex;
+  gap: 5px;
+  align-items: center;
+  color: var(--muted);
+}
+.roll-toolbar .sep {
+  width: 1px;
+  align-self: stretch;
+  background: var(--border);
+  margin: 0 2px;
+}
+
+.rec {
+  color: #ff8a95;
+}
+.rec.on {
+  background: #6b1d26;
+  border-color: var(--red);
+  color: #ffd5da;
+}
+.rec.live {
+  animation: rec-pulse 1s ease-in-out infinite;
+}
+@keyframes rec-pulse {
+  50% {
+    background: #9a2433;
+  }
 }

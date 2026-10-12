@@ -83,3 +83,6 @@ export function snapTick(tick: number, snap: number, bars: Bar[], mode: 'round' 
   const q = mode === 'floor' ? Math.floor(rel / snap) : Math.round(rel / snap);
   return bar.start + q * snap;
 }
+
+/** Length of one snap step at `at` (a whole bar for bar snap). */
+export const snapLength = (snap: number, bars: Bar[], at: number) => (snap === 0 ? barAtTick(bars, at).length : snap);

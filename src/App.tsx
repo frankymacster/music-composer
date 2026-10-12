@@ -6,19 +6,33 @@ import { Transport, togglePlay } from './components/Transport';
 import { TrackList } from './components/TrackList';
 import { PianoRoll, preview, snapLength } from './components/PianoRoll';
 import { CodePanel } from './components/CodePanel';
+import { RollToolbar } from './components/RollToolbar';
 import { CollapsedBar, Splitter, usePane } from './components/Panes';
 import type { Note } from './music/codegen';
 import { rowsFor } from './music/kit';
+import * as live from './live';
 
 let clipboard: Note[] = [];
 
 function handleKey(e: KeyboardEvent) {
   const target = e.target as HTMLElement;
   if (target.closest('input, select, textarea, .cm-editor')) return;
+  if (live.handleKeyDown(e)) return;
   const s = useStore.getState();
   const track = selectedTrack(s);
   const mod = e.metaKey || e.ctrlKey;
   const key = e.key.toLowerCase();
+
+  if (key === 'm' && !mod && !e.altKey) {
+    live.releaseAll();
+    s.set({ keyboard: !s.keyboard });
+    return;
+  }
+  if (key === 'f9') {
+    e.preventDefault();
+    s.set({ armed: !s.armed });
+    return;
+  }
 
   if (key === ' ') {
     e.preventDefault();
@@ -79,6 +93,9 @@ function handleKey(e: KeyboardEvent) {
     const step = snapLength(s.snap, bars, sel[0].start) * (key === 'arrowleft' ? -1 : 1);
     if (sel.some((n) => n.start + step < 0)) return;
     s.setNotes(track.id, track.notes.map((n) => (s.selection.has(n.id) ? { ...n, start: n.start + step } : n)));
+  } else if (mod && key === 'u') {
+    e.preventDefault();
+    s.quantize(track.id, s.selection);
   } else if (key === 'escape') {
     s.select(new Set());
   }
@@ -98,7 +115,13 @@ export function App() {
       })
       .catch((e) => setError(String(e)));
     window.addEventListener('keydown', handleKey);
-    return () => window.removeEventListener('keydown', handleKey);
+    window.addEventListener('keyup', live.handleKeyUp);
+    window.addEventListener('blur', live.releaseAll);
+    return () => {
+      window.removeEventListener('keydown', handleKey);
+      window.removeEventListener('keyup', live.handleKeyUp);
+      window.removeEventListener('blur', live.releaseAll);
+    };
   }, []);
 
   if (error) return <div className="loading error">Failed to start Strudel: {error}</div>;
@@ -125,7 +148,10 @@ export function App() {
             />
           </>
         )}
-        <PianoRoll />
+        <div className="editor-col">
+          <RollToolbar />
+          <PianoRoll />
+        </div>
         {code.collapsed ? (
           <CollapsedBar label="Code" side="right" onExpand={() => setCode({ collapsed: false })} />
         ) : (

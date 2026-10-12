@@ -35,13 +35,40 @@ let base: Pattern = core.silence;
 let loop: Loop = { start: 0, len: 1 };
 let shift = 0;
 let playing = false;
+/** Scheduler cycle at which the song starts (count-in length). */
+let offset = 0;
+let countIn: Pattern | undefined;
+let lastRaw = 0;
 
 const mod = (a: number, n: number) => ((a % n) + n) % n;
 
 function apply() {
   if (!repl) return;
-  repl.scheduler.setPattern(base.ribbon(loop.start, loop.len).early(shift), false);
+  let song = base.ribbon(loop.start, loop.len).early(shift - offset);
+  if (offset > 0) {
+    const from = (h: any) => !h.whole || h.whole.begin.valueOf() >= offset - 1e-9;
+    song = song.filterHaps(from);
+    if (countIn) song = core.stack(countIn.filterHaps((h: any) => !from(h)), song);
+  }
+  repl.scheduler.setPattern(song, false);
 }
+
+/**
+ * Song cycles elapsed since the song (not the count-in) started, for what is being heard right now:
+ * the inverse of the scheduler's hap → audio-time mapping, minus its latency and the output latency.
+ */
+function heardRaw(): number | undefined {
+  const sch = repl?.scheduler;
+  if (!playing || !sch) return undefined;
+  if (sch.num_ticks_since_cps_change === 0 || sch.seconds_at_cps_change === undefined) return lastRaw;
+  const ctx = webaudio.getAudioContext();
+  const outLatency = ctx.outputLatency || ctx.baseLatency || 0;
+  const cycle = sch.num_cycles_at_cps_change + (ctx.currentTime - outLatency - sch.seconds_at_cps_change - sch.latency) * sch.cps;
+  lastRaw = cycle - offset;
+  return lastRaw;
+}
+
+const midiPort = (name: string) => (midi.WebMidi.enabled ? midi.WebMidi.outputs.find((o: any) => o.name.includes(name)) : undefined);
 
 export const engine = {
   get playing() {
@@ -57,28 +84,50 @@ export const engine = {
     repl?.scheduler.setCps(cps);
   },
 
-  /** Current song position in cycles. */
+  /** Song cycles heard since the song started (negative during count-in), or undefined when stopped. */
+  rawNow: heardRaw,
+
+  /** Song position (cycles) of a raw time from rawNow(). */
+  songPos(raw: number): number {
+    return loop.start + mod(Math.max(0, raw) + shift, loop.len);
+  },
+
+  countingIn(): boolean {
+    const raw = heardRaw();
+    return raw !== undefined && raw < 0;
+  },
+
+  /** Song position (cycles) being heard right now. */
   position(): number {
-    if (!playing || !repl) return loop.start;
-    return loop.start + mod(repl.scheduler.now() + shift, loop.len);
+    const raw = heardRaw();
+    return raw === undefined ? loop.start : this.songPos(raw);
+  },
+
+  get loop(): Loop {
+    return loop;
   },
 
   setLoop(next: Loop) {
-    if (playing && repl) {
-      let pos = this.position();
+    const raw = heardRaw();
+    if (raw !== undefined) {
+      let pos = this.songPos(raw);
       if (pos < next.start || pos >= next.start + next.len) pos = next.start;
-      shift = mod(pos - next.start - repl.scheduler.now(), next.len);
+      shift = mod(pos - next.start - Math.max(0, raw), next.len);
       loop = next;
       apply();
     } else loop = next;
   },
 
-  async play(from: number, next: Loop) {
+  /** Starts playback at `from` (cycles); `count` is an optional count-in of `count.cycles` with its click pattern. */
+  async play(from: number, next: Loop, count?: { cycles: number; pattern: Pattern }) {
     if (!repl) return;
     await ensureAudio();
     loop = next;
     const pos = from >= next.start && from < next.start + next.len ? from : next.start;
     shift = pos - next.start;
+    offset = count?.cycles ?? 0;
+    countIn = count?.pattern;
+    lastRaw = -offset;
     apply();
     await repl.scheduler.start();
     playing = true;
@@ -88,19 +137,28 @@ export const engine = {
     if (!repl) return;
     repl.scheduler.stop();
     playing = false;
+    offset = 0;
     if (midi.WebMidi.enabled) midi.WebMidi.outputs.forEach((o: any) => o.sendAllNotesOff());
   },
 
-  async preview(value: Record<string, unknown>, out: Output) {
+  /** Plays a note immediately. Built-in sounds can't be released early, so they last `duration` seconds. */
+  async preview(value: Record<string, unknown>, out: Output, duration = 0.3) {
     if (out.type === 'midi') {
-      const port = midi.WebMidi.enabled && midi.WebMidi.outputs.find((o: any) => o.name.includes(out.port));
-      port?.playNote(value.note, { channels: out.channel, duration: 250, attack: value.velocity ?? 0.8 });
+      midiPort(out.port)?.playNote(value.note, { channels: out.channel, duration: duration * 1000, attack: value.velocity ?? 0.8 });
       return;
     }
     await ensureAudio();
     const ctx = webaudio.getAudioContext();
     const sound = out.type === 'synth' ? { s: out.sound } : value.s ? {} : { s: 'triangle' };
-    webaudio.superdough({ ...value, ...sound }, ctx.currentTime + 0.02, 0.3);
+    webaudio.superdough({ ...value, ...sound }, ctx.currentTime + 0.01, duration);
+  },
+
+  midiNoteOn(out: Output, note: number, velocity: number) {
+    if (out.type === 'midi') midiPort(out.port)?.sendNoteOn(note, { channels: out.channel, attack: velocity });
+  },
+
+  midiNoteOff(out: Output, note: number) {
+    if (out.type === 'midi') midiPort(out.port)?.sendNoteOff(note, { channels: out.channel });
   },
 };
 
@@ -127,6 +185,25 @@ export async function enableMidi(): Promise<string[]> {
   await midi.enableWebMidi();
   return midi.WebMidi.outputs.map((o: any) => o.name);
 }
+
+type NoteListener = (on: boolean, note: number, velocity: number) => void;
+const attachedInputs = new Set<string>();
+
+/** Calls `cb` for note on/off from every MIDI input, including ones connected later. */
+export function listenMidiInputs(cb: NoteListener) {
+  const attach = () => {
+    for (const input of midi.WebMidi.inputs as any[]) {
+      if (attachedInputs.has(input.id)) continue;
+      attachedInputs.add(input.id);
+      input.addListener('noteon', (e: any) => cb(e.note.attack > 0, e.note.number, e.note.attack));
+      input.addListener('noteoff', (e: any) => cb(false, e.note.number, 0));
+    }
+  };
+  attach();
+  midi.WebMidi.addListener('connected', attach);
+}
+
+export const midiInputNames = (): string[] => (midi.WebMidi.enabled ? midi.WebMidi.inputs.map((i: any) => i.name) : []);
 
 export function onMidiChange(cb: (ports: string[]) => void) {
   const handler = () => cb(midi.WebMidi.outputs.map((o: any) => o.name));
