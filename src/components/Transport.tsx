@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { useStore, songInfo, type Project } from '../store';
+import { useStore, songInfo, migrate, type Project } from '../store';
 import { engine, enableMidi, onMidiChange } from '../strudel/engine';
 import { loopRange } from '../sync';
 import { SNAPS, TPW, barAtTick } from '../music/time';
@@ -136,7 +136,7 @@ export function Transport() {
             try {
               const p = JSON.parse(await openFile('.json,application/json')) as Project;
               if (p?.version !== 1 || !Array.isArray(p.tracks)) throw new Error('Not a Music Composer project');
-              s.setProject(p);
+              s.setProject(migrate(p));
             } catch (e) {
               alert(e instanceof Error ? e.message : String(e));
             }

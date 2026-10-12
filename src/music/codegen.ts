@@ -1,4 +1,5 @@
 import { type Bar, TPW, gcd } from './time';
+import { DRUMS, drumByGm, type TrackKind } from './drums';
 
 export interface Note {
   id: string;
@@ -70,14 +71,18 @@ function voiceTokens(voice: Chord[], bars: Bar[], length: number, step: number):
     while (i + 1 < bars.length && bars[i + 1].start <= t) i++;
     return i;
   };
+  // Rests are split so each bar's content starts its own line; whole empty bars collapse into one token.
   const rest = (from: number, to: number) => {
-    let t = from;
-    while (t < to) {
-      const b = barOf(t);
-      const barEnd = b + 1 < bars.length ? bars[b + 1].start : length;
-      const end = Math.min(to, barEnd);
-      tokens.push({ bar: b, start: t, steps: (end - t) / step });
-      t = end;
+    const cuts = [from];
+    const firstBar = barOf(from);
+    const lastBar = barOf(to - 1);
+    if (lastBar > firstBar) {
+      cuts.push(bars[firstBar + 1].start);
+      if (to < length && bars[lastBar].start > cuts[cuts.length - 1]) cuts.push(bars[lastBar].start);
+    }
+    cuts.push(to);
+    for (let i = 0; i + 1 < cuts.length; i++) {
+      if (cuts[i + 1] > cuts[i]) tokens.push({ bar: barOf(cuts[i]), start: cuts[i], steps: (cuts[i + 1] - cuts[i]) / step });
     }
   };
   let t = 0;
@@ -103,19 +108,16 @@ function renderMini(tokens: Token[], render: (t: Token) => string, indent: strin
   return lines.length > 1 ? '`' + lines.join('\n' + indent) + '`' : '`' + lines[0] + '`';
 }
 
-function renderVoice(voice: Chord[], bars: Bar[], length: number, step: number, indent: string): string {
+function renderVoice(voice: Chord[], bars: Bar[], length: number, step: number, indent: string, kind: TrackKind): string {
   const tokens = voiceTokens(voice, bars, length, step);
+  const name = kind === 'drums' ? (p: number) => drumByGm.get(p)?.s ?? '~' : pitchName;
+  const fn = kind === 'drums' ? 's' : 'note';
   const notes = renderMini(
     tokens,
-    (t) =>
-      !t.chord
-        ? '~'
-        : t.chord.pitches.length === 1
-          ? pitchName(t.chord.pitches[0])
-          : `[${t.chord.pitches.map(pitchName).join(',')}]`,
-    indent + '      ',
+    (t) => (!t.chord ? '~' : t.chord.pitches.length === 1 ? name(t.chord.pitches[0]) : `[${t.chord.pitches.map(name).join(',')}]`),
+    indent + ' '.repeat(fn.length + 2),
   );
-  let code = `note(${notes})`;
+  let code = `${fn}(${notes})`;
   const vels = new Set(voice.map((c) => c.vel));
   if (vels.size === 1) {
     const v = voice[0].vel;
@@ -126,9 +128,17 @@ function renderVoice(voice: Chord[], bars: Bar[], length: number, step: number, 
   return code;
 }
 
-export function generateTrackCode(allNotes: Note[], bars: Bar[], length: number): string {
+function drumVoices(notes: Note[]): Chord[][] {
+  return DRUMS.flatMap((d) => {
+    const piece = notes.filter((n) => n.pitch === d.gm);
+    return piece.length ? splitVoices(toChords(piece)) : [];
+  });
+}
+
+export function generateTrackCode(allNotes: Note[], bars: Bar[], length: number, kind: TrackKind = 'notes'): string {
   const notes = allNotes
     .filter((n) => n.start < length && n.dur > 0)
+    .filter((n) => kind === 'notes' || drumByGm.has(n.pitch))
     .map((n) => ({ ...n, dur: Math.min(n.dur, length - n.start) }));
   if (!notes.length) return 'silence';
 
@@ -136,11 +146,11 @@ export function generateTrackCode(allNotes: Note[], bars: Bar[], length: number)
   for (const n of notes) step = gcd(gcd(step, n.start), n.dur);
   for (const b of bars) step = gcd(step, b.start);
 
-  const voices = splitVoices(toChords(notes));
+  const voices = kind === 'drums' ? drumVoices(notes) : splitVoices(toChords(notes));
   const cycles = length / TPW;
   const slow = cycles === 1 ? '' : `.slow(${fmtNum(cycles)})`;
 
-  if (voices.length === 1) return renderVoice(voices[0], bars, length, step, '') + slow;
-  const body = voices.map((v) => '  ' + renderVoice(v, bars, length, step, '  ')).join(',\n');
+  if (voices.length === 1) return renderVoice(voices[0], bars, length, step, '', kind) + slow;
+  const body = voices.map((v) => '  ' + renderVoice(v, bars, length, step, '  ', kind)).join(',\n');
   return `stack(\n${body}\n)${slow}`;
 }

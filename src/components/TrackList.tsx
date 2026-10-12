@@ -2,16 +2,19 @@ import { useState } from 'react';
 import { useStore, COLORS, type Track } from '../store';
 import { SOUNDFONTS, SYNTHS, soundLabel } from '../sounds';
 import { enableMidi } from '../strudel/engine';
+import { DRUM_BANKS } from '../music/drums';
 
 function OutputSelect({ track }: { track: Track }) {
   const update = useStore((s) => s.updateTrack);
   const midiPorts = useStore((s) => s.midiPorts);
   const set = useStore((s) => s.set);
   const out = track.output;
-  const value = out.type === 'synth' ? `synth:${out.sound}` : out.type;
+  const value = out.type === 'synth' ? `synth:${out.sound}` : out.type === 'kit' ? `kit:${out.bank}` : out.type;
+  const drums = track.kind === 'drums';
 
   const onChange = async (v: string) => {
     if (v.startsWith('synth:')) update(track.id, { output: { type: 'synth', sound: v.slice(6) } });
+    else if (v.startsWith('kit:')) update(track.id, { output: { type: 'kit', bank: v.slice(4) } });
     else if (v === 'code') update(track.id, { output: { type: 'code' } });
     else if (v === 'midi') {
       let ports = midiPorts;
@@ -24,27 +27,40 @@ function OutputSelect({ track }: { track: Track }) {
           return;
         }
       }
-      update(track.id, { output: { type: 'midi', port: ports[0] ?? 'IAC', channel: 1 } });
+      update(track.id, { output: { type: 'midi', port: ports[0] ?? 'IAC', channel: drums ? 10 : 1 } });
     }
   };
 
   return (
     <div className="output">
       <select value={value} onChange={(e) => onChange(e.target.value)} onClick={(e) => e.stopPropagation()}>
-        <optgroup label="Built-in synths">
-          {SYNTHS.map((s) => (
-            <option key={s} value={`synth:${s}`}>
-              {s}
-            </option>
-          ))}
-        </optgroup>
-        <optgroup label="General MIDI soundfonts">
-          {SOUNDFONTS.map((s) => (
-            <option key={s} value={`synth:${s}`}>
-              {soundLabel(s)}
-            </option>
-          ))}
-        </optgroup>
+        {drums ? (
+          <optgroup label="Drum kits">
+            <option value="kit:">Default kit</option>
+            {DRUM_BANKS.map((b) => (
+              <option key={b} value={`kit:${b}`}>
+                {b}
+              </option>
+            ))}
+          </optgroup>
+        ) : (
+          <>
+            <optgroup label="Built-in synths">
+              {SYNTHS.map((s) => (
+                <option key={s} value={`synth:${s}`}>
+                  {s}
+                </option>
+              ))}
+            </optgroup>
+            <optgroup label="General MIDI soundfonts">
+              {SOUNDFONTS.map((s) => (
+                <option key={s} value={`synth:${s}`}>
+                  {soundLabel(s)}
+                </option>
+              ))}
+            </optgroup>
+          </>
+        )}
         <optgroup label="Other">
           <option value="midi">Web MIDI out…</option>
           <option value="code">Defined in code</option>
@@ -117,6 +133,7 @@ function TrackRow({ track, selected }: { track: Track; selected: boolean }) {
             {track.name}
           </span>
         )}
+        {track.kind === 'drums' && <span className="badge drums">drums</span>}
         <span className={`badge ${track.mode}`}>{track.mode}</span>
         <button
           className={`toggle ${track.mute ? 'on mute' : ''}`}
@@ -154,7 +171,7 @@ function TrackRow({ track, selected }: { track: Track; selected: boolean }) {
   );
 }
 
-export function TrackList() {
+export function TrackList({ onCollapse }: { onCollapse: () => void }) {
   const tracks = useStore((s) => s.project.tracks);
   const selectedId = useStore((s) => s.selectedTrackId);
   const addTrack = useStore((s) => s.addTrack);
@@ -162,7 +179,16 @@ export function TrackList() {
     <div className="track-list">
       <div className="panel-title">
         Tracks
-        <button onClick={addTrack}>+ Add track</button>
+        <span className="spacer" />
+        <button onClick={() => addTrack('notes')} title="Add an instrument track">
+          + Inst
+        </button>
+        <button onClick={() => addTrack('drums')} title="Add a drum track">
+          + Drums
+        </button>
+        <button className="icon" onClick={onCollapse} title="Collapse tracks">
+          ‹
+        </button>
       </div>
       {tracks.map((t) => (
         <TrackRow key={t.id} track={t} selected={t.id === selectedId} />

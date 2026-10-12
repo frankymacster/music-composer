@@ -6,6 +6,7 @@ import * as midi from '@strudel/midi';
 import { registerSoundfonts } from '@strudel/soundfonts';
 import { transpiler } from '@strudel/transpiler';
 import type { Pattern } from './compile';
+import { midiDrumMap, type TrackKind } from '../music/drums';
 
 let repl: any;
 let audioInit: Promise<void> | undefined;
@@ -13,11 +14,15 @@ let audioInit: Promise<void> | undefined;
 export async function initEngine(): Promise<void> {
   await core.evalScope(core, mini, tonal, webaudio, midi);
   repl = webaudio.webaudioRepl({ transpiler });
-  await Promise.all([
-    webaudio.registerSynthSounds(),
-    registerSoundfonts(),
-    webaudio.samples('github:tidalcycles/dirt-samples').catch((e: unknown) => console.warn('dirt-samples', e)),
-  ]);
+  await Promise.all([webaudio.registerSynthSounds(), registerSoundfonts()]);
+  loadSamples();
+}
+
+async function loadSamples() {
+  const load = (src: string) => webaudio.samples(src).catch((e: unknown) => console.warn(`samples ${src}`, e));
+  await Promise.all([load('github:tidalcycles/dirt-samples'), load('https://strudel.b-cdn.net/tidal-drum-machines.json')]);
+  // loaded last so the standard drum names (bd, sd, hh, …) resolve to this kit
+  await load('github:tidalcycles/uzu-drumkit');
 }
 
 const ensureAudio = () => (audioInit ??= webaudio.initAudio());
@@ -95,19 +100,24 @@ export const engine = {
     }
     await ensureAudio();
     const ctx = webaudio.getAudioContext();
-    const s = out.type === 'synth' ? out.sound : 'triangle';
-    webaudio.superdough({ ...value, s }, ctx.currentTime + 0.02, 0.3);
+    const sound = out.type === 'synth' ? { s: out.sound } : out.type === 'kit' ? { bank: out.bank || undefined } : { s: 'triangle' };
+    webaudio.superdough({ ...value, ...sound }, ctx.currentTime + 0.02, 0.3);
   },
 };
 
 export type Output =
   | { type: 'synth'; sound: string }
+  | { type: 'kit'; bank: string }
   | { type: 'midi'; port: string; channel: number }
   | { type: 'code' };
 
-export function applyOutput(pattern: Pattern, out: Output, gain: number): Pattern {
+export function applyOutput(pattern: Pattern, out: Output, gain: number, kind: TrackKind): Pattern {
   if (out.type === 'synth') pattern = pattern.s(out.sound);
-  if (out.type === 'midi') return pattern.midichan(out.channel).midi(out.port);
+  if (out.type === 'kit' && out.bank) pattern = pattern.bank(out.bank);
+  if (out.type === 'midi') {
+    if (kind === 'drums') pattern = pattern.withValue((v: any) => ({ ...v, note: midiDrumMap[v.s] ?? v.note }));
+    return pattern.midichan(out.channel).midi(out.port);
+  }
   return gain === 1 ? pattern : pattern.postgain(gain);
 }
 

@@ -113,8 +113,8 @@ function TrackEditor({ track }: { track: Track }) {
       <div className={`mode-banner ${track.mode}`}>
         {track.mode === 'grid' ? (
           <>
-            <b>GRID</b> Generated from the piano roll. Edits that stay in <code>note / stack / velocity / slow</code> form stay
-            editable in the grid.
+            <b>GRID</b> Generated from the {track.kind === 'drums' ? 'drum grid' : 'piano roll'}. Edits that stay in{' '}
+            <code>{track.kind === 'drums' ? 's' : 'note'} / stack / velocity / slow</code> form stay editable in the grid.
           </>
         ) : (
           <>
@@ -189,7 +189,7 @@ function SongView() {
   );
 }
 
-export function CodePanel() {
+export function CodePanel({ onCollapse }: { onCollapse: () => void }) {
   const track = useStore(selectedTrack);
   const [tab, setTab] = useState<'track' | 'song'>('track');
   return (
@@ -200,6 +200,10 @@ export function CodePanel() {
         </button>
         <button className={tab === 'song' ? 'active' : ''} onClick={() => setTab('song')}>
           Song
+        </button>
+        <span className="spacer" />
+        <button className="icon" onClick={onCollapse} title="Collapse code">
+          ›
         </button>
       </div>
       {tab === 'track' ? track ? <TrackEditor track={track} /> : <div className="empty">No track selected</div> : <SongView />}

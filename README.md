@@ -16,6 +16,8 @@ Web MIDI needs Chrome, Edge or Firefox (not Safari).
 - **Grid track**: notes are the source; code is generated as `note(...)`/`stack(...)` + `.velocity()` + `.slow(songCycles)`.
   Editing that code keeps it a grid track as long as it stays in that shape (`src/music/canonical.ts`).
 - **Code track**: anything else. The roll shows read-only notes from `pattern.queryArc`. **Bake to grid** flattens it into notes.
+- **Drum tracks** (`+ Drums`): one lane per piece (Kick, Snare, Hats…), each emitted as its own `s(...)` line in a `stack`.
+  Output is the default kit or a drum-machine bank (`.bank("RolandTR909")`), or Web MIDI using GM drum notes (ch 10).
 - Playback stacks all tracks, then `.ribbon(loopStart, loopLen)` for song/loop-region looping.
 
 ## Controls
@@ -34,6 +36,7 @@ Web MIDI needs Chrome, Edge or Firefox (not Safari).
 | wheel, ⇧-wheel, ⌘-wheel, ⌥-wheel | scroll, horizontal scroll, zoom time, zoom pitch |
 | Meter strip (top of ruler) | click a bar to set its time signature |
 | Bar-number strip | click = jump, drag = loop region |
+| Pane edges | drag to resize, double-click (or ‹ ›) to collapse |
 | ⌘↵ in editor | apply code immediately |
 
 Built on Strudel (AGPL-3.0-or-later), so this project is AGPL too.

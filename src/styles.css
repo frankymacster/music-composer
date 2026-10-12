@@ -81,18 +81,87 @@ select {
 }
 
 .app {
-  display: grid;
+  display: flex;
+  flex-direction: column;
   height: 100%;
-  grid-template-columns: 250px minmax(0, 1fr) minmax(320px, 34%);
-  grid-template-rows: auto minmax(0, 1fr);
-  grid-template-areas:
-    'transport transport transport'
-    'tracks roll code';
+}
+.main {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+.pane {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+.pane > * {
+  flex: 1;
+  min-height: 0;
+}
+.splitter {
+  flex: none;
+  width: 5px;
+  margin: 0 -2px;
+  z-index: 5;
+  cursor: col-resize;
+  position: relative;
+}
+.splitter::after {
+  content: '';
+  position: absolute;
+  inset: 0 2px;
+  background: var(--border);
+}
+.splitter:hover::after,
+.splitter.active::after {
+  inset: 0 1px;
+  background: var(--accent);
+}
+.collapsed-bar {
+  flex: none;
+  width: 26px;
+  border: none;
+  border-radius: 0;
+  background: var(--panel);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 0;
+  color: var(--muted);
+}
+.collapsed-bar.left {
+  border-right: 1px solid var(--border);
+}
+.collapsed-bar.right {
+  border-left: 1px solid var(--border);
+}
+.collapsed-bar:hover {
+  color: var(--text);
+}
+.vlabel {
+  writing-mode: vertical-rl;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.chev {
+  font-size: 15px;
+}
+.spacer {
+  flex: 1;
+}
+button.icon {
+  padding: 1px 7px;
+  font-size: 14px;
+  line-height: 1;
 }
 
 /* transport */
 .transport {
-  grid-area: transport;
   display: flex;
   flex-wrap: wrap;
   gap: 6px 18px;
@@ -145,14 +214,12 @@ select {
 
 /* tracks */
 .track-list {
-  grid-area: tracks;
   background: var(--panel);
-  border-right: 1px solid var(--border);
   overflow-y: auto;
 }
 .panel-title {
   display: flex;
-  justify-content: space-between;
+  gap: 5px;
   align-items: center;
   padding: 8px 10px;
   color: var(--muted);
@@ -212,6 +279,10 @@ select {
   background: #2b3a2f;
   color: #8fd19e;
 }
+.badge.drums {
+  background: #4a3424;
+  color: #ffb27a;
+}
 .badge.code {
   background: #3a2f4a;
   color: #c8a8ff;
@@ -257,7 +328,8 @@ select {
 
 /* roll */
 .roll {
-  grid-area: roll;
+  flex: 1;
+  min-width: 0;
   position: relative;
   overflow: hidden;
   min-height: 0;
@@ -301,15 +373,15 @@ select {
 
 /* code */
 .code-panel {
-  grid-area: code;
   display: flex;
   flex-direction: column;
   min-height: 0;
-  border-left: 1px solid var(--border);
   background: #141518;
 }
 .tabs {
   display: flex;
+  align-items: center;
+  padding-right: 8px;
   background: var(--panel);
   border-bottom: 1px solid var(--border);
 }
@@ -379,13 +451,3 @@ select {
   color: var(--muted);
 }
 
-@media (max-width: 1100px) {
-  .app {
-    grid-template-columns: 220px minmax(0, 1fr);
-    grid-template-rows: auto minmax(0, 1fr) 40%;
-    grid-template-areas:
-      'transport transport'
-      'tracks roll'
-      'code code';
-  }
-}

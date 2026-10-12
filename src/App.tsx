@@ -6,7 +6,9 @@ import { Transport, togglePlay } from './components/Transport';
 import { TrackList } from './components/TrackList';
 import { PianoRoll, preview, snapLength } from './components/PianoRoll';
 import { CodePanel } from './components/CodePanel';
+import { CollapsedBar, Splitter, usePane } from './components/Panes';
 import type { Note } from './music/codegen';
+import { rowsFor } from './music/drums';
 
 let clipboard: Note[] = [];
 
@@ -65,10 +67,12 @@ function handleKey(e: KeyboardEvent) {
     s.select(new Set(copies.map((n) => n.id)));
   } else if ((key === 'arrowup' || key === 'arrowdown') && sel.length) {
     e.preventDefault();
-    const d = (key === 'arrowup' ? 1 : -1) * (e.shiftKey ? 12 : 1);
-    if (sel.some((n) => n.pitch + d < 0 || n.pitch + d > 127)) return;
-    s.setNotes(track.id, track.notes.map((n) => (s.selection.has(n.id) ? { ...n, pitch: n.pitch + d } : n)));
-    preview(track, sel[0].pitch + d, sel[0].vel);
+    const rows = rowsFor(track.kind);
+    const d = (key === 'arrowup' ? -1 : 1) * (e.shiftKey && track.kind === 'notes' ? 12 : 1);
+    const shift = (p: number) => rows[rows.indexOf(p) + d];
+    if (sel.some((n) => shift(n.pitch) === undefined)) return;
+    s.setNotes(track.id, track.notes.map((n) => (s.selection.has(n.id) ? { ...n, pitch: shift(n.pitch) } : n)));
+    preview(track, shift(sel[0].pitch), sel[0].vel);
   } else if ((key === 'arrowleft' || key === 'arrowright') && sel.length) {
     e.preventDefault();
     const { bars } = songInfo(s.project.song);
@@ -83,6 +87,8 @@ function handleKey(e: KeyboardEvent) {
 export function App() {
   const ready = useStore((s) => s.ready);
   const [error, setError] = useState<string>();
+  const [tracks, setTracks] = usePane('tracks', { width: 250, collapsed: false });
+  const [code, setCode] = usePane('code', { width: 460, collapsed: false });
 
   useEffect(() => {
     initEngine()
@@ -101,9 +107,43 @@ export function App() {
   return (
     <div className="app">
       <Transport />
-      <TrackList />
-      <PianoRoll />
-      <CodePanel />
+      <div className="main">
+        {tracks.collapsed ? (
+          <CollapsedBar label="Tracks" side="left" onExpand={() => setTracks({ collapsed: false })} />
+        ) : (
+          <>
+            <div className="pane" style={{ width: tracks.width }}>
+              <TrackList onCollapse={() => setTracks({ collapsed: true })} />
+            </div>
+            <Splitter
+              side="left"
+              width={tracks.width}
+              min={190}
+              max={480}
+              onResize={(width) => setTracks({ width })}
+              onCollapse={() => setTracks({ collapsed: true })}
+            />
+          </>
+        )}
+        <PianoRoll />
+        {code.collapsed ? (
+          <CollapsedBar label="Code" side="right" onExpand={() => setCode({ collapsed: false })} />
+        ) : (
+          <>
+            <Splitter
+              side="right"
+              width={code.width}
+              min={280}
+              max={Math.max(320, window.innerWidth - (tracks.collapsed ? 0 : tracks.width) - 320)}
+              onResize={(width) => setCode({ width })}
+              onCollapse={() => setCode({ collapsed: true })}
+            />
+            <div className="pane" style={{ width: code.width }}>
+              <CodePanel onCollapse={() => setCode({ collapsed: true })} />
+            </div>
+          </>
+        )}
+      </div>
     </div>
   );
 }

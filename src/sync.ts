@@ -20,7 +20,7 @@ function rebuild() {
       const c = trackPattern(t);
       if (!c) return undefined;
       try {
-        return applyOutput(c.pattern, t.output, t.gain);
+        return applyOutput(c.pattern, t.output, t.gain, t.kind);
       } catch (e) {
         console.warn(`track ${t.name}:`, e);
         return undefined;

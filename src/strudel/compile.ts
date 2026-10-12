@@ -2,6 +2,7 @@ import { noteToMidi, freqToMidi } from '@strudel/core';
 import { transpiler } from '@strudel/transpiler';
 import { TPW } from '../music/time';
 import type { Note } from '../music/codegen';
+import { drumByName, type TrackKind } from '../music/drums';
 
 export type Pattern = any;
 
@@ -22,6 +23,11 @@ export function compile(code: string): Compiled {
   }
 }
 
+function drumPitch(value: any): number | undefined {
+  if (typeof value !== 'object' || value === null || typeof value.s !== 'string') return undefined;
+  return drumByName.get(value.s)?.gm;
+}
+
 function hapPitch(value: any): number | undefined {
   if (typeof value !== 'object' || value === null) return undefined;
   const { note, n, freq } = value;
@@ -32,13 +38,33 @@ function hapPitch(value: any): number | undefined {
   return undefined;
 }
 
-export function hapsToNotes(pattern: Pattern, length: number): Note[] {
+export function onsetHaps(pattern: Pattern, length: number): any[] {
+  return pattern.queryArc(0, length / TPW).filter((h: any) => h.hasOnset());
+}
+
+/** Guess whether a pattern is mostly drum hits or pitched notes. */
+export function detectKind(pattern: Pattern, length: number): TrackKind {
+  let drums = 0;
+  let notes = 0;
+  for (const hap of onsetHaps(pattern, length)) {
+    if (hapPitch(hap.value) !== undefined) notes++;
+    else if (drumPitch(hap.value) !== undefined) drums++;
+  }
+  return drums > notes ? 'drums' : 'notes';
+}
+
+/** True when every onset can be represented on the given kind of grid. */
+export function fitsGrid(pattern: Pattern, length: number, kind: TrackKind): boolean {
+  const pitchOf = kind === 'drums' ? drumPitch : hapPitch;
+  return onsetHaps(pattern, length).every((h) => pitchOf(h.value) !== undefined);
+}
+
+export function hapsToNotes(pattern: Pattern, length: number, kind: TrackKind = 'notes'): Note[] {
+  const pitchOf = kind === 'drums' ? drumPitch : hapPitch;
   const notes: Note[] = [];
-  const haps = pattern.queryArc(0, length / TPW);
   let i = 0;
-  for (const hap of haps) {
-    if (!hap.hasOnset()) continue;
-    const pitch = hapPitch(hap.value);
+  for (const hap of onsetHaps(pattern, length)) {
+    const pitch = pitchOf(hap.value);
     if (pitch === undefined || pitch < 0 || pitch > 127) continue;
     const start = Math.round(hap.whole.begin.valueOf() * TPW);
     const end = Math.round(hap.whole.end.valueOf() * TPW);

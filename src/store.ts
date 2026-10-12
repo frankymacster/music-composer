@@ -2,13 +2,15 @@ import { create } from 'zustand';
 import { generateTrackCode, type Note } from './music/codegen';
 import { isGridCode } from './music/canonical';
 import { computeBars, songLength, type MeterChange, type Song, TPW } from './music/time';
-import { compile, hapsToNotes, type Compiled } from './strudel/compile';
+import { compile, detectKind, fitsGrid, hapsToNotes, type Compiled } from './strudel/compile';
+import { drumByName, type TrackKind } from './music/drums';
 import type { Output } from './strudel/engine';
 
 export interface Track {
   id: string;
   name: string;
   color: string;
+  kind: TrackKind;
   code: string;
   mode: 'grid' | 'code';
   notes: Note[];
@@ -65,7 +67,7 @@ const withIds = (notes: Note[]) => notes.map((n) => ({ ...n, id: uid() }));
 function regen(track: Track, song: Song): Track {
   if (track.mode !== 'grid') return track;
   const { bars, length } = songInfo(song);
-  return { ...track, code: generateTrackCode(track.notes, bars, length) };
+  return { ...track, code: generateTrackCode(track.notes, bars, length, track.kind) };
 }
 
 function makeTrack(partial: Partial<Track> & { name: string }, song: Song, index: number): Track {
@@ -73,6 +75,7 @@ function makeTrack(partial: Partial<Track> & { name: string }, song: Song, index
     {
       id: uid(),
       color: COLORS[index % COLORS.length],
+      kind: 'notes',
       code: 'silence',
       mode: 'grid',
       notes: [],
@@ -103,27 +106,45 @@ function demoProject(): Project {
     { id: uid(), pitch: root, start: bar * TPW + q * 2, dur: q / 2, vel: 0.7 },
     { id: uid(), pitch: root + 12, start: bar * TPW + q * 3, dur: q / 2, vel: 0.8 },
   ]);
+  const drums: Note[] = [0, 1, 2, 3].flatMap((bar) => {
+    const t = bar * TPW;
+    return [
+      hit('bd', t, 0.95),
+      hit('bd', t + q * 2, 0.9),
+      hit('sd', t + q, 0.85),
+      hit('sd', t + q * 3, 0.85),
+      ...Array.from({ length: 8 }, (_, i) => hit('hh', t + (i * q) / 2, i % 2 ? 0.45 : 0.7)),
+    ];
+  });
   return {
     version: 1,
     song,
     tracks: [
       makeTrack({ name: 'Keys', notes: keys, output: { type: 'synth', sound: 'gm_epiano1' } }, song, 0),
       makeTrack({ name: 'Bass', notes: bass, output: { type: 'synth', sound: 'gm_synth_bass_1' } }, song, 1),
+      makeTrack({ name: 'Drums', kind: 'drums', notes: drums, output: { type: 'kit', bank: 'RolandTR909' } }, song, 2),
       {
-        ...makeTrack({ name: 'Drums', output: { type: 'code' } }, song, 2),
+        ...makeTrack({ name: 'Arp', output: { type: 'synth', sound: 'gm_vibraphone' }, gain: 0.6 }, song, 3),
         mode: 'code',
-        code: 's("bd*4, [~ sd]*2, hh*8").gain(0.8)',
+        code: 'n("0 2 4 <7 6>").scale("A4:minor").fast(2).late(1/16)',
       },
     ],
   };
 }
+
+const hit = (s: string, start: number, vel = 0.8): Note => ({ id: uid(), pitch: drumByName.get(s)!.gm, start, dur: TPW / 16, vel });
+
+export const migrate = (p: Project): Project => ({
+  ...p,
+  tracks: p.tracks.map((t) => ({ ...t, kind: t.kind ?? 'notes' })),
+});
 
 const STORAGE_KEY = 'music-composer:project';
 
 function loadSaved(): Project | undefined {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    return raw ? (JSON.parse(raw) as Project) : undefined;
+    return raw ? migrate(JSON.parse(raw) as Project) : undefined;
   } catch {
     return undefined;
   }
@@ -153,7 +174,7 @@ interface State {
   setBars(bars: number): void;
   setMeter(bar: number, meter: { num: number; den: number } | null): void;
 
-  addTrack(): void;
+  addTrack(kind: TrackKind): void;
   removeTrack(id: string): void;
   updateTrack(id: string, patch: Partial<Track>, history?: boolean): void;
   setNotes(id: string, notes: Note[], history?: boolean): void;
@@ -225,9 +246,15 @@ export const useStore = create<State>((set, get) => {
       setSong({ ...song, meters });
     },
 
-    addTrack: () => {
+    addTrack: (kind) => {
       const p = get().project;
-      const t = makeTrack({ name: `Track ${p.tracks.length + 1}` }, p.song, p.tracks.length);
+      const t = makeTrack(
+        kind === 'drums'
+          ? { name: 'Drums', kind, output: { type: 'kit', bank: '' } }
+          : { name: `Track ${p.tracks.length + 1}` },
+        p.song,
+        p.tracks.length,
+      );
       commit({ ...p, tracks: [...p.tracks, t] });
       set({ selectedTrackId: t.id, selection: new Set() });
     },
@@ -245,8 +272,9 @@ export const useStore = create<State>((set, get) => {
         if (t.code === code) return t;
         const c = compileCached(code);
         if (!c.ok) return { ...t, code };
-        if (isGridCode(code)) {
-          const notes = withIds(hapsToNotes(c.pattern, songInfo(get().project.song).length));
+        const { length } = songInfo(get().project.song);
+        if (isGridCode(code, t.kind) && fitsGrid(c.pattern, length, t.kind)) {
+          const notes = withIds(hapsToNotes(c.pattern, length, t.kind));
           return { ...t, code, mode: 'grid', notes };
         }
         return { ...t, code, mode: 'code', notes: [] };
@@ -255,8 +283,18 @@ export const useStore = create<State>((set, get) => {
       const t = get().project.tracks.find((t) => t.id === id);
       const c = t && trackPattern(t);
       if (!c) return;
-      const notes = withIds(hapsToNotes(c.pattern, songInfo(get().project.song).length));
-      get().setNotes(id, notes);
+      const { length } = songInfo(get().project.song);
+      const kind = detectKind(c.pattern, length);
+      const notes = withIds(hapsToNotes(c.pattern, length, kind));
+      const output: Output =
+        kind === 'drums' && t.output.type !== 'kit' && t.output.type !== 'midi'
+          ? { type: 'kit', bank: '' }
+          : kind === 'notes' && t.output.type === 'kit'
+            ? { type: 'synth', sound: 'gm_epiano1' }
+            : t.output;
+      get().checkpoint();
+      get().updateTrack(id, { kind, output }, false);
+      get().setNotes(id, notes, false);
     },
 
     select: (selection) => set({ selection }),
