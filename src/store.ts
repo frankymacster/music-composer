@@ -4,7 +4,7 @@ import { isGridCode } from './music/canonical';
 import { snapTick, type MeterChange, TPW } from './music/time';
 import { sectionInfo, timeline, type Section } from './music/arrangement';
 import type { Scale } from './music/scale';
-import { compile, detectKind, fitsGrid, hapsToNotes, kitPitch, kitSounds, notePitch, type Compiled } from './strudel/compile';
+import { compile, detectKind, fitsGrid, hapsToNotes, kitPitch, kitSounds, notePitch, withoutChance, type Compiled } from './strudel/compile';
 import {
   STANDARD_DRUMS,
   defaultLanes,
@@ -21,13 +21,26 @@ import type { Output } from './strudel/engine';
 import { modifierDef, type Modifier, type ModifierType } from './music/modifiers';
 import { euclid } from './music/transforms';
 import { bassNote, parseProgression, voiceLead, type ChordStamp } from './music/chords';
+import { chordSpans, generate, type ChordEvent, type GeneratorSpec } from './music/generators';
 
-/** A track's content for one section. */
-export interface Clip {
+/** What a clip plays. */
+export interface ClipContent {
   code: string;
   mode: 'grid' | 'code';
   notes: Note[];
+  /** Set while the notes are exactly what a generator produced; cleared by any manual edit. */
+  generator?: GeneratorSpec;
 }
+
+/** A track's content for one section: the active content, plus alternative versions to switch between. */
+export interface Clip extends ClipContent {
+  /** All versions (the active one may be stale here; the clip's own fields are authoritative). */
+  variations?: ClipContent[];
+  /** Index of the active version in `variations`. */
+  variation?: number;
+}
+
+const contentOf = (c: Clip): ClipContent => ({ code: c.code, mode: c.mode, notes: c.notes, generator: c.generator });
 
 export interface Track {
   id: string;
@@ -111,18 +124,29 @@ export const findSection = (p: Project, id: string) => p.sections.find((s) => s.
 
 const withIds = (notes: Note[]) => notes.map((n) => ({ ...n, id: uid() }));
 
-function regenClip(t: Track, clip: Clip, section: Section): Clip {
+/** Regenerates a grid clip's code; with `rerun`, a generated clip first re-runs its generator (chords/length/key changed). */
+function regenClip(t: Track, clip: Clip, section: Section, rerun?: { scale?: Scale }): Clip {
   if (clip.mode !== 'grid') return clip;
   const { bars, length } = sectionInfo(section);
-  return { ...clip, code: generateTrackCode(clip.notes, bars, length, t.kind === 'kit' ? t.lanes : undefined) };
+  const notes = clip.generator && rerun ? generate(clip.generator, genContext(t, section, rerun.scale), uid) : clip.notes;
+  return { ...clip, notes, code: generateTrackCode(notes, bars, length, t.kind === 'kit' ? t.lanes : undefined) };
 }
 
-/** Regenerates the grid code of every clip (or only `sectionId`'s). */
-function regen(t: Track, sections: Section[], sectionId?: string): Track {
+/** What generators see for a track in a section: its bars, chord lane, the key and kit lanes. */
+export function genContext(t: Track, section: Section, scale?: Scale) {
+  const { bars, length } = sectionInfo(section);
+  return { bars, length, chords: chordSpans(section.chords, scale, length), scale, lanes: t.lanes };
+}
+
+/** A manual edit: the clip keeps its notes but no longer follows its generator. */
+const edited = (clip: Clip): Clip => (clip.generator ? { ...clip, generator: undefined } : clip);
+
+/** Regenerates the grid code (and generated notes) of every clip, or only `sectionId`'s. */
+function regen(t: Track, sections: Section[], sectionId?: string, rerun?: { scale?: Scale }): Track {
   const clips: Record<string, Clip> = {};
   for (const [id, clip] of Object.entries(t.clips)) {
     const section = sections.find((s) => s.id === id);
-    clips[id] = section && (!sectionId || id === sectionId) ? regenClip(t, clip, section) : clip;
+    clips[id] = section && (!sectionId || id === sectionId) ? regenClip(t, clip, section, rerun) : clip;
   }
   return { ...t, clips };
 }
@@ -153,7 +177,12 @@ export function laneConflict(lanes: KitLane[], lane: KitLane): string | undefine
 
 const mapNotes = (t: Track, fn: (notes: Note[]) => Note[]): Track => ({
   ...t,
-  clips: Object.fromEntries(Object.entries(t.clips).map(([id, c]) => [id, { ...c, notes: fn(c.notes) }])),
+  clips: Object.fromEntries(
+    Object.entries(t.clips).map(([id, c]) => [
+      id,
+      { ...c, notes: fn(c.notes), variations: c.variations?.map((v) => ({ ...v, notes: fn(v.notes) })) },
+    ]),
+  ),
 });
 
 function makeTrack(partial: Partial<Track> & { name: string }, sections: Section[], index: number): Track {
@@ -335,7 +364,13 @@ interface State {
   /** Show other tracks' notes in the roll. */
   ghosts: boolean;
   /** Open toolbar popover. */
-  popover: 'chords' | 'euclid' | null;
+  popover: 'chords' | 'euclid' | 'generate' | null;
+  /** Drawn notes snap to tones of the chord lane. */
+  chordSnap: boolean;
+  /** With a scale set: drawing, dragging, playing and inverting stay in key. */
+  scaleLock: boolean;
+  /** Bumped when a clip variation is switched, so playback can make the switch on the next bar. */
+  variationSwitch: number;
   showShortcuts: boolean;
 
   checkpoint(): void;
@@ -387,9 +422,16 @@ interface State {
     trackId: string,
     text: string,
     length: { bars: number } | { beats: number },
-    replace: boolean,
-    bassTrackId?: string,
+    options: { lane: boolean; notes: boolean; replace: boolean; bassTrackId?: string },
   ): string | undefined;
+  /** Replaces the selected section's chord lane; generated clips follow. */
+  setChords(chords: ChordEvent[]): void;
+  /** Fills the selected section's clip on `trackId` from a generator (rerollable). */
+  generateClip(trackId: string, spec: GeneratorSpec): void;
+  /** Copies the selected section's clip into a new variation and switches to it. */
+  addVariation(trackId: string): void;
+  selectVariation(trackId: string, index: number): void;
+  removeVariation(trackId: string, index: number): void;
   addModifier(trackId: string, type: ModifierType): void;
   updateModifier(trackId: string, id: string, patch: Partial<Modifier>, history?: boolean): void;
   removeModifier(trackId: string, id: string): void;
@@ -401,27 +443,30 @@ interface State {
 const initial = loadSaved() ?? demoProject();
 
 export const useStore = create<State>((set, get) => {
-  const commit = (project: Project, history = true) => {
+  const commit = (project: Project, history = true, extra: Partial<State> = {}) => {
     if (history) set({ past: [...get().past.slice(-199), get().project], future: [] });
-    set({ project });
+    set({ project, ...extra });
   };
-  const mapTrack = (id: string, fn: (t: Track) => Track, history = true) => {
+  const mapTrack = (id: string, fn: (t: Track) => Track, history = true, extra: Partial<State> = {}) => {
     const p = get().project;
-    commit({ ...p, tracks: p.tracks.map((t) => (t.id === id ? fn(t) : t)) }, history);
+    commit({ ...p, tracks: p.tracks.map((t) => (t.id === id ? fn(t) : t)) }, history, extra);
   };
   const section = () => findSection(get().project, get().selectedSectionId);
   /** Updates the clip of `sectionId` (default: selected) on track `id`. */
-  const mapClip = (id: string, fn: (clip: Clip, t: Track, section: Section) => Clip, history = true, sectionId?: string) => {
+  const mapClip = (
+    id: string,
+    fn: (clip: Clip, t: Track, section: Section) => Clip,
+    history = true,
+    sectionId?: string,
+    extra: Partial<State> = {},
+  ) => {
     const sec = sectionId ? findSection(get().project, sectionId) : section();
-    mapTrack(id, (t) => ({ ...t, clips: { ...t.clips, [sec.id]: fn(clipOf(t, sec.id), t, sec) } }), history);
+    mapTrack(id, (t) => ({ ...t, clips: { ...t.clips, [sec.id]: fn(clipOf(t, sec.id), t, sec) } }), history, extra);
   };
   const setSection = (next: Section) => {
     const p = get().project;
-    commit({
-      ...p,
-      sections: p.sections.map((s) => (s.id === next.id ? next : s)),
-      tracks: p.tracks.map((t) => regen(t, p.sections.map((s) => (s.id === next.id ? next : s)), next.id)),
-    });
+    const sections = p.sections.map((s) => (s.id === next.id ? next : s));
+    commit({ ...p, sections, tracks: p.tracks.map((t) => regen(t, sections, next.id, { scale: p.scale })) });
   };
   const resetEditing = (patch: Partial<State> = {}) => set({ selection: new Set(), cursor: 0, loop: { ...get().loop, enabled: false }, ...patch });
 
@@ -453,6 +498,9 @@ export const useStore = create<State>((set, get) => {
     chordStamp: 'off',
     ghosts: true,
     popover: null,
+    chordSnap: false,
+    scaleLock: true,
+    variationSwitch: 0,
     showShortcuts: false,
 
     checkpoint: () => set({ past: [...get().past.slice(-199), get().project], future: [] }),
@@ -610,22 +658,28 @@ export const useStore = create<State>((set, get) => {
     },
     updateTrack: (id, patch, history = true) => mapTrack(id, (t) => ({ ...t, ...patch }), history),
     setNotes: (id, notes, history = true, sectionId) =>
-      mapClip(id, (clip, t, sec) => regenClip(t, { ...clip, mode: 'grid', notes }, sec), history, sectionId),
+      mapClip(id, (clip, t, sec) => regenClip(t, { ...edited(clip), mode: 'grid', notes }, sec), history, sectionId),
     setCode: (id, code, sectionId) => {
       const sec = sectionId ? findSection(get().project, sectionId) : section();
       mapTrack(id, (t) => {
         const clip = clipOf(t, sec.id);
         if (clip.code === code) return t;
-        const put = (next: Clip, lanes = t.lanes): Track => ({ ...t, lanes, clips: { ...t.clips, [sec.id]: next } });
-        const c = compileCached(code);
-        if (!c.ok) return put({ ...clip, code });
+        const put = (next: ClipContent, lanes = t.lanes): Track => ({
+          ...t,
+          lanes,
+          clips: { ...t.clips, [sec.id]: { ...next, variations: clip.variations, variation: clip.variation } },
+        });
+        if (!compileCached(code).ok) return put({ ...clip, code });
+        // analyse without `?` so randomly dropped notes are still seen (their chance is read from the text)
+        const c = compileCached(withoutChance(code));
+        if (!c.ok) return put({ code, mode: 'code', notes: [] });
         const { length } = sectionInfo(sec);
         if (t.kind === 'kit' && isGridCode(code, 'kit')) {
           const lanes = mergeLanes(t.lanes ?? [], kitSounds(c.pattern, length));
-          return put({ code, mode: 'grid', notes: withIds(hapsToNotes(c.pattern, length, kitPitch(lanes))) }, lanes);
+          return put({ code, mode: 'grid', notes: withIds(hapsToNotes(c.pattern, length, kitPitch(lanes), code)) }, lanes);
         }
         if (t.kind === 'notes' && isGridCode(code) && fitsGrid(c.pattern, length, notePitch)) {
-          return put({ code, mode: 'grid', notes: withIds(hapsToNotes(c.pattern, length)) });
+          return put({ code, mode: 'grid', notes: withIds(hapsToNotes(c.pattern, length, notePitch, code)) });
         }
         return put({ code, mode: 'code', notes: [] });
       });
@@ -635,12 +689,15 @@ export const useStore = create<State>((set, get) => {
       const t = s.project.tracks.find((t) => t.id === id);
       if (!t) return;
       const sec = section();
-      const c = trackPattern(trackView(t, sec.id));
+      const view = trackView(t, sec.id);
+      const plain = compileCached(withoutChance(view.code));
+      const c = plain.ok ? plain : trackPattern(view);
+      const source = plain.ok ? view.code : undefined;
       if (!c) return;
       const { length } = sectionInfo(sec);
       const kind = t.kind === 'kit' ? 'kit' : detectKind(c.pattern, length);
       const lanes = kind === 'kit' ? mergeLanes(t.lanes ?? [], kitSounds(c.pattern, length)) : undefined;
-      const notes = withIds(hapsToNotes(c.pattern, length, lanes ? kitPitch(lanes) : notePitch));
+      const notes = withIds(hapsToNotes(c.pattern, length, lanes ? kitPitch(lanes) : notePitch, source));
       const output: Output =
         kind === 'kit' && t.output.type !== 'kit' && t.output.type !== 'midi'
           ? { type: 'kit' }
@@ -658,7 +715,11 @@ export const useStore = create<State>((set, get) => {
       );
     },
 
-    setScale: (scale) => commit({ ...get().project, scale }),
+    setScale: (scale) => {
+      const p = get().project;
+      // generated parts follow the new key
+      commit({ ...p, scale, tracks: p.tracks.map((t) => regen(t, p.sections, undefined, { scale })) });
+    },
     quantize: (trackId, ids) => {
       const { snap, quantizeStrength } = get();
       if (snap === 1) return;
@@ -670,7 +731,7 @@ export const useStore = create<State>((set, get) => {
           const target = snapTick(n.start, snap, bars, 'round');
           return { ...n, start: Math.max(0, Math.round(n.start + (target - n.start) * quantizeStrength)) };
         });
-        return regenClip(t, { ...clip, notes }, sec);
+        return regenClip(t, { ...edited(clip), notes }, sec);
       });
     },
 
@@ -685,7 +746,7 @@ export const useStore = create<State>((set, get) => {
         const { length } = sectionInfo(sec);
         const result = fn(chosen).filter((n) => n.start < length && n.pitch >= 0 && n.pitch <= 127);
         selected = result.map((n) => n.id);
-        return regenClip(t, { ...clip, notes: [...clip.notes.filter((n) => !ids.has(n.id)), ...result] }, sec);
+        return regenClip(t, { ...edited(clip), notes: [...clip.notes.filter((n) => !ids.has(n.id)), ...result] }, sec);
       });
       set({ selection: new Set(selected) });
     },
@@ -699,9 +760,9 @@ export const useStore = create<State>((set, get) => {
           if (pattern[i % steps]) notes.push({ id: uid(), pitch, start, dur: Math.min(stepTicks, length - start), vel });
         }
         const kept = clip.mode === 'grid' ? clip.notes.filter((n) => n.pitch !== pitch) : [];
-        return regenClip(t, { ...clip, mode: 'grid', notes: [...kept, ...notes] }, sec);
+        return regenClip(t, { ...edited(clip), mode: 'grid', notes: [...kept, ...notes] }, sec);
       }),
-    writeProgression: (trackId, text, length, replace, bassTrackId) => {
+    writeProgression: (trackId, text, length, { lane, notes: writeNotes, replace, bassTrackId }) => {
       let chords;
       try {
         chords = parseProgression(text, get().project.scale);
@@ -727,16 +788,63 @@ export const useStore = create<State>((set, get) => {
       const chordNotes: Note[] = slots.flatMap((slot, i) => voiced[i].map((pitch) => ({ id: uid(), pitch, start: slot.start, dur: slot.dur, vel })));
       const bassNotes: Note[] = slots.map((slot, i) => ({ id: uid(), pitch: bassNote(sequence[i]), start: slot.start, dur: slot.dur, vel }));
       get().checkpoint();
+      if (lane) {
+        const symbols = text.split(/[\s|,]+/).filter(Boolean);
+        get().setChords(slots.map((slot, i) => ({ id: uid(), symbol: symbols[i % symbols.length], start: slot.start, dur: slot.dur })));
+        // setChords records its own undo step; merge it into this one
+        set({ past: get().past.slice(0, -1) });
+      }
       const write = (id: string, notes: Note[]) =>
         mapClip(
           id,
-          (clip, t) => regenClip(t, { ...clip, mode: 'grid', notes: replace || clip.mode !== 'grid' ? notes : [...clip.notes, ...notes] }, sec),
+          (clip, t) =>
+            regenClip(t, { ...edited(clip), mode: 'grid', notes: replace || clip.mode !== 'grid' ? notes : [...clip.notes, ...notes] }, sec),
           false,
         );
-      write(trackId, chordNotes);
+      if (writeNotes) {
+        write(trackId, chordNotes);
+        set({ selection: new Set(chordNotes.map((n) => n.id)) });
+      }
       if (bassTrackId) write(bassTrackId, bassNotes);
-      set({ selection: new Set(chordNotes.map((n) => n.id)) });
       return undefined;
+    },
+    setChords: (chords) => setSection({ ...section(), chords: [...chords].sort((a, b) => a.start - b.start) }),
+    generateClip: (trackId, spec) => {
+      mapClip(trackId, (clip, t, sec) => regenClip(t, { ...clip, mode: 'grid', generator: spec, notes: [] }, sec, { scale: get().project.scale }));
+      set({ selection: new Set() });
+    },
+    addVariation: (trackId) => {
+      mapClip(trackId, (clip) => {
+        const slots = [...(clip.variations ?? [contentOf(clip)])];
+        const active = clip.variation ?? 0;
+        slots[active] = contentOf(clip);
+        const copy: ClipContent = { ...contentOf(clip), notes: withIds(clip.notes) };
+        slots.push(copy);
+        return { ...copy, variations: slots, variation: slots.length - 1 };
+      }, true, undefined, { selection: new Set(), variationSwitch: get().variationSwitch + 1 });
+    },
+    selectVariation: (trackId, index) => {
+      const t = get().project.tracks.find((t) => t.id === trackId);
+      const clip = t && clipOf(t, section().id);
+      if (!clip?.variations || index === (clip.variation ?? 0) || index < 0 || index >= clip.variations.length) return;
+      mapClip(trackId, (clip, t, sec) => {
+        const slots = [...clip.variations!];
+        slots[clip.variation ?? 0] = contentOf(clip);
+        return regenClip(t, { ...slots[index], variations: slots, variation: index }, sec, { scale: get().project.scale });
+      }, true, undefined, { selection: new Set(), variationSwitch: get().variationSwitch + 1 });
+    },
+    removeVariation: (trackId, index) => {
+      mapClip(trackId, (clip, t, sec) => {
+        if (!clip.variations || clip.variations.length < 2) return clip;
+        const active = clip.variation ?? 0;
+        const slots = [...clip.variations];
+        slots[active] = contentOf(clip);
+        slots.splice(index, 1);
+        const next = index < active ? active - 1 : Math.min(active, slots.length - 1);
+        const variations = slots.length > 1 ? slots : undefined;
+        return regenClip(t, { ...slots[next], variations, variation: variations ? next : undefined }, sec, { scale: get().project.scale });
+      });
+      set({ selection: new Set() });
     },
     addModifier: (trackId, type) =>
       mapTrack(trackId, (t) => ({

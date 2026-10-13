@@ -1,6 +1,7 @@
 import { useStore, selectedTrack, editInfo, findSection, trackView, uid, type Track } from './store';
 import { locateRaw } from './sync';
 import { sectionInfo } from './music/arrangement';
+import { scaleDegree, snapToScale } from './music/scale';
 import { engine, listenMidiInputs } from './strudel/engine';
 import { laneValue } from './music/kit';
 import { snapLength, snapTick, TPW } from './music/time';
@@ -60,13 +61,22 @@ export const capturable = () => {
   return played.filter((p) => p.trackId === id).length;
 };
 
-/** Pitch played by keyboard key index `i` on `track`: chromatic from the octave, or kit lanes bottom-up. */
+/** The scale notes are locked to, if the In key lock is on and a scale is set. */
+export const lockedScale = (s: ReturnType<typeof useStore.getState>) => (s.scaleLock ? s.project.scale : undefined);
+
+/**
+ * Pitch played by keyboard key index `i` on `track`: kit lanes bottom-up; in key, consecutive scale notes from the
+ * root at or below the octave's C; otherwise chromatic from that C.
+ */
 function keyPitch(track: Track, i: number): number | undefined {
   if (track.kind === 'kit') {
     const lanes = track.lanes ?? [];
     return lanes[lanes.length - 1 - i]?.note;
   }
-  const pitch = 12 * (useStore.getState().octave + 1) + i;
+  const s = useStore.getState();
+  const c = 12 * (s.octave + 1);
+  const scale = lockedScale(s);
+  const pitch = scale ? scaleDegree(i, c, scale) : c + i;
   return pitch <= 127 ? pitch : undefined;
 }
 
@@ -87,6 +97,7 @@ const isPlayable = (track: Track, pitch: number) => track.kind !== 'kit' || !!tr
 export function noteOn(id: string, pitch: number, vel: number) {
   const s = useStore.getState();
   const track = selectedTrack(s);
+  if (track?.kind === 'notes') pitch = snapToScale(pitch, lockedScale(s));
   if (!track || held.has(id) || !isPlayable(track, pitch)) return;
   monitor(track, pitch, vel);
 

@@ -95,6 +95,11 @@ describe('variations', () => {
   });
 });
 
+const selectedSectionChords = () => {
+  const st = useStore.getState();
+  return st.project.sections.find((x) => x.id === st.selectedSectionId)!.chords!.map((c) => c.symbol);
+};
+
 describe('chord progressions', () => {
   it('writes voice-led chords and a bass line, one per bar', () => {
     const s = useStore.getState();
@@ -104,13 +109,51 @@ describe('chord progressions', () => {
     const bassId = useStore.getState().selectedTrackId;
     useStore.getState().set({ selectedTrackId: chordsId });
     s.setBars(4);
-    expect(s.writeProgression(chordsId, 'Am F C G', { bars: 1 }, true, bassId)).toBeUndefined();
+    expect(s.writeProgression(chordsId, 'Am F C G', { bars: 1 }, { lane: true, notes: true, replace: true, bassTrackId: bassId })).toBeUndefined();
     const st = useStore.getState();
     const view = selectedTrack(st)!;
     const starts = [...new Set(view.notes.map((n) => n.start))];
     expect(starts).toEqual([0, 1920, 3840, 5760]);
     const bass = trackView(st.project.tracks.find((t) => t.id === bassId)!, st.selectedSectionId).notes;
     expect(bass.map((n) => n.pitch % 12)).toEqual([9, 5, 0, 7]);
-    expect(s.writeProgression(chordsId, 'Am Xq', { bars: 1 }, true)).toMatch(/Can't read chord/);
+    expect(selectedSectionChords()).toEqual(['Am', 'F', 'C', 'G']);
+    expect(s.writeProgression(chordsId, 'Am Xq', { bars: 1 }, { lane: true, notes: true, replace: true })).toMatch(/Can't read chord/);
+  });
+
+  it('generated clips follow chord lane changes and stop following after a manual edit', () => {
+    const s = useStore.getState();
+    s.addTrack('notes');
+    const id = useStore.getState().selectedTrackId;
+    s.setChords([{ id: 'c1', symbol: 'C', start: 0, dur: 4 * 1920 }]);
+    s.generateClip(id, { type: 'bass', style: 'root', seed: 1 });
+    const roots = () => selectedTrack(useStore.getState())!.notes.map((n) => n.pitch % 12);
+    expect(roots()).toEqual([0]);
+    s.setChords([{ id: 'c1', symbol: 'F', start: 0, dur: 4 * 1920 }]);
+    expect(roots()).toEqual([5]);
+    s.setNotes(id, selectedTrack(useStore.getState())!.notes.map((n) => ({ ...n, vel: 0.5 })));
+    s.setChords([{ id: 'c1', symbol: 'G', start: 0, dur: 4 * 1920 }]);
+    expect(roots()).toEqual([5]);
+  });
+});
+
+describe('clip variations', () => {
+  it('adds, switches and removes versions of a clip', () => {
+    const s = useStore.getState();
+    s.addTrack('notes');
+    const id = useStore.getState().selectedTrackId;
+    const view = () => selectedTrack(useStore.getState())!;
+    s.setNotes(id, [{ id: 'a', pitch: 60, start: 0, dur: 120, vel: 1 }]);
+    s.addVariation(id);
+    expect(view().variation).toBe(1);
+    s.setNotes(id, [{ id: 'b', pitch: 67, start: 0, dur: 120, vel: 1 }]);
+    s.selectVariation(id, 0);
+    expect(view().notes.map((n) => n.pitch)).toEqual([60]);
+    s.selectVariation(id, 1);
+    expect(view().notes.map((n) => n.pitch)).toEqual([67]);
+    s.setCode(id, 'note("e4")');
+    expect(view().variations).toHaveLength(2);
+    s.removeVariation(id, 1);
+    expect(view().variations).toBeUndefined();
+    expect(view().notes.map((n) => n.pitch)).toEqual([60]);
   });
 });

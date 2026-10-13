@@ -732,9 +732,13 @@ button.mini {
   font-size: 12px;
 }
 
-.vel-toggle {
+.lane-tabs {
   position: absolute;
   left: 4px;
+  display: flex;
+  gap: 2px;
+}
+.lane-tabs button {
   padding: 0 6px;
   font-size: 10px;
   line-height: 16px;
@@ -742,7 +746,10 @@ button.mini {
   background: none;
   color: var(--muted);
 }
-.vel-toggle:hover {
+.lane-tabs button.on {
+  color: var(--accent);
+}
+.lane-tabs button:hover {
   color: var(--text);
   background: var(--panel-2);
 }
@@ -801,4 +808,56 @@ kbd {
   font-size: 11px;
   color: var(--accent);
   white-space: nowrap;
+}
+
+.popover.chord-edit {
+  width: 270px;
+}
+.popover.chord-edit input:not([type='number']) {
+  flex: 1;
+  min-width: 0;
+}
+.popover.chord-edit input[type='number'] {
+  width: 56px;
+}
+
+.popover.generate {
+  top: 30px;
+  left: 0;
+  width: 310px;
+}
+.popover.generate label {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.popover.generate label.check {
+  flex-direction: row;
+  align-items: center;
+}
+
+.mode-banner.generated b {
+  color: var(--accent);
+}
+
+.variations {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+.var-label {
+  color: var(--muted);
+  margin-right: 4px;
+}
+.var-chip {
+  padding: 1px 7px;
+  font-size: 11px;
+  min-width: 24px;
+}
+.var-chip.on {
+  background: rgba(245, 165, 36, 0.2);
+  border-color: var(--accent);
+  color: #ffd089;
 }

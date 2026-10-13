@@ -1,22 +1,37 @@
 import { useEffect, useRef, useState } from 'react';
-import { useStore, selectedTrack, editInfo, trackPattern, uid, clipOf, type TrackView as Track } from '../store';
-import { hapsToNotes, kitPitch } from '../strudel/compile';
+import { useStore, selectedTrack, selectedSection, editInfo, trackPattern, compileCached, uid, clipOf, type TrackView as Track } from '../store';
+import { hapsToNotes, kitPitch, withoutChance } from '../strudel/compile';
 import { engine } from '../strudel/engine';
 import { TPW, snapTick, snapLength, barAtTick, type Bar } from '../music/time';
 import { isBlackKey, pitchLabel, type Note } from '../music/codegen';
 import { laneLabel, laneValue, rowsFor, type KitLane, type TrackKind } from '../music/kit';
-import { inScale, isRoot, type Scale } from '../music/scale';
-import { stampChord } from '../music/chords';
+import { inScale, isRoot, scaleDistance, snapToScale, type Scale } from '../music/scale';
+import { scaleStep } from '../music/transforms';
+import { parseChord, stampChord } from '../music/chords';
+import { ChordEditPopover } from './ChordEditPopover';
+import type { ChordEvent } from '../music/generators';
 import { MeterPopover } from './MeterPopover';
 import { LaneEditor } from './LaneEditor';
 import { play, playhead } from '../sync';
 
 const METER_H = 18;
-const RULER_H = 38;
+/** Ruler: meter strip, bar numbers (BAR_H), then the chord lane down to RULER_H. */
+const BAR_H = 38;
+const CHORD_H = 20;
+const RULER_H = BAR_H + CHORD_H;
 /** Velocity lane height when open, and when collapsed to its header. */
 const VEL_OPEN = 84;
 const VEL_CLOSED = 20;
 const VEL_KEY = 'music-composer:velocity-lane';
+
+/** What the bottom lane shows and edits. */
+type LaneMode = 'velocity' | 'chance';
+const laneAmount = (n: Note, mode: LaneMode) => (mode === 'chance' ? n.chance ?? 1 : n.vel);
+const withLaneAmount = (n: Note, mode: LaneMode, value: number): Note => {
+  if (mode === 'velocity') return { ...n, vel: value };
+  const { chance: _old, ...rest } = n;
+  return value >= 1 ? rest : { ...rest, chance: value };
+};
 const velocityOpen = () => {
   try {
     return localStorage.getItem(VEL_KEY) !== 'closed';
@@ -78,6 +93,7 @@ interface View {
   fold: boolean;
   sectionId?: string;
   velH: number;
+  laneMode: LaneMode;
 }
 
 type Drag =
@@ -96,9 +112,10 @@ function visibleNotes(track: Track, length: number): Note[] {
   if (track.mode === 'grid') return track.notes;
   const key = `${track.code}|${length}|${track.kind === 'kit' ? JSON.stringify(track.lanes) : ''}`;
   if (ghostCache.key !== key) {
-    const c = trackPattern(track);
+    const plain = compileCached(withoutChance(track.code));
+    const c = plain.ok ? plain : trackPattern(track);
     ghostCache.key = key;
-    ghostCache.notes = c ? hapsToNotes(c.pattern, length, track.kind === 'kit' ? kitPitch(track.lanes ?? []) : undefined) : [];
+    ghostCache.notes = c ? hapsToNotes(c.pattern, length, track.kind === 'kit' ? kitPitch(track.lanes ?? []) : undefined, plain.ok ? track.code : undefined) : [];
   }
   return ghostCache.notes;
 }
@@ -130,6 +147,7 @@ export function PianoRoll() {
     lane: NOTES_LANE,
     fold: false,
     velH: velocityOpen() ? VEL_OPEN : VEL_CLOSED,
+    laneMode: 'velocity',
     saved: { notes: { rowH: 14, scrollY: (127 - 76) * 14 }, kit: { rowH: 24, scrollY: 0 } },
   });
   const drag = useRef<Drag | null>(null);
@@ -137,6 +155,7 @@ export function PianoRoll() {
   const lastLen = useRef(TPW / 8);
   const [meterEdit, setMeterEdit] = useState<{ bar: number; x: number } | null>(null);
   const [laneEdit, setLaneEdit] = useState<{ laneId: string; y: number } | null>(null);
+  const [chordEdit, setChordEdit] = useState<{ chord: ChordEvent; x: number } | null>(null);
   const track = useStore(selectedTrack);
 
   useEffect(() => {
@@ -170,6 +189,13 @@ export function PianoRoll() {
       const notes = track ? visibleNotes(track, length) : [];
       const scale = s.project.scale;
       const lane = laneFor(track, notes, s.fold, scale);
+      const chords = (selectedSection(s).chords ?? []).map((c) => {
+        try {
+          return { ...c, parsed: parseChord(c.symbol, scale) };
+        } catch {
+          return { ...c, parsed: undefined };
+        }
+      });
       if (v.lane.kind !== lane.kind) {
         v.saved[v.lane.kind] = { rowH: v.rowH, scrollY: v.scrollY };
         v.rowH = v.saved[lane.kind].rowH;
@@ -228,6 +254,23 @@ export function PianoRoll() {
         if (drums || folded || p % 12 === 0) {
           ctx.fillStyle = 'rgba(255,255,255,0.10)';
           ctx.fillRect(KEYS_W, y + rowH - 1, w, 1);
+        }
+      }
+
+      // chord tones of the chord lane, lightly tinted
+      if (!drums) {
+        for (const c of chords) {
+          if (!c.parsed) continue;
+          const pcs = new Set(c.parsed.intervals.map((i) => (c.parsed!.root + i) % 12));
+          const x0 = Math.max(KEYS_W, xOf(c.start));
+          const x1 = Math.min(w, xOf(c.start + c.dur));
+          if (x1 <= x0) continue;
+          for (let i = iTop; i <= iBot; i++) {
+            const p = lane.rows[i];
+            if (!pcs.has(p % 12)) continue;
+            ctx.fillStyle = p % 12 === c.parsed.root ? 'rgba(245,165,36,0.09)' : 'rgba(255,255,255,0.045)';
+            ctx.fillRect(x0, yOf(p), x1 - x0, rowH);
+          }
         }
       }
 
@@ -292,12 +335,13 @@ export function PianoRoll() {
         const y = yOf(n.pitch);
         if (y > h || y + rowH < RULER_H) continue;
         const sel = s.selection.has(n.id);
-        ctx.globalAlpha = ghost ? 0.35 : (0.45 + 0.55 * n.vel) * (n.start >= length ? 0.35 : 1);
+        const chance = n.chance ?? 1;
+        ctx.globalAlpha = ghost ? 0.35 : (0.45 + 0.55 * n.vel) * (n.start >= length ? 0.35 : 1) * (0.35 + 0.65 * chance);
         ctx.fillStyle = color;
         ctx.fillRect(x + 0.5, y + 1, nw, rowH - 2);
         ctx.globalAlpha = 1;
-        if (ghost) {
-          ctx.strokeStyle = color;
+        if (ghost || chance < 1) {
+          ctx.strokeStyle = sel ? '#fff' : color;
           ctx.setLineDash([3, 2]);
           ctx.strokeRect(x + 1, y + 1.5, nw - 1, rowH - 3);
           ctx.setLineDash([]);
@@ -307,10 +351,11 @@ export function PianoRoll() {
           ctx.strokeRect(x + 1, y + 1.5, nw - 1, rowH - 3);
           ctx.lineWidth = 1;
         }
-        if (!drums && nw > 30 && rowH >= 11) {
-          ctx.fillStyle = 'rgba(0,0,0,0.75)';
+        if (nw > 30 && rowH >= 11) {
+          ctx.fillStyle = chance < 1 ? '#e8e8e8' : 'rgba(0,0,0,0.75)';
           ctx.font = '10px ui-sans-serif, system-ui';
-          ctx.fillText(pitchLabel(n.pitch), x + 4, y + rowH / 2 + 3.5);
+          const label = [drums ? '' : pitchLabel(n.pitch), chance < 1 ? `${Math.round(chance * 100)}%` : ''].filter(Boolean).join(' ');
+          if (label) ctx.fillText(label, x + 4, y + rowH / 2 + 3.5, nw - 6);
         }
       }
 
@@ -362,7 +407,7 @@ export function PianoRoll() {
       for (const n of v.velH === VEL_OPEN ? notes : []) {
         const x = xOf(n.start);
         if (x < KEYS_W - 4 || x > w) continue;
-        const top = vy + 6 + (1 - n.vel) * (v.velH - 12);
+        const top = vy + 6 + (1 - laneAmount(n, v.laneMode)) * (v.velH - 12);
         ctx.fillStyle = s.selection.has(n.id) ? '#fff' : color;
         ctx.globalAlpha = ghost ? 0.4 : 0.9;
         ctx.fillRect(x, top, 2, vy + v.velH - 6 - top);
@@ -437,16 +482,16 @@ export function PianoRoll() {
         const meter = `${bar.num}/${bar.den}`;
         if (bar.start <= t1 && bar.start + bar.length >= t0) {
           ctx.fillStyle = 'rgba(255,255,255,0.3)';
-          ctx.fillRect(Math.round(x), METER_H, 1, RULER_H - METER_H);
+          ctx.fillRect(Math.round(x), METER_H, 1, BAR_H - METER_H);
           if (bar.index % labelEvery === 0) {
             ctx.fillStyle = '#b8bcc2';
             ctx.font = '11px ui-sans-serif, system-ui';
-            ctx.fillText(String(bar.index + 1), x + 4, RULER_H - 6);
+            ctx.fillText(String(bar.index + 1), x + 4, BAR_H - 6);
           }
           const beat = TPW / bar.den;
           if (beat * ppt > 6) {
             ctx.fillStyle = 'rgba(255,255,255,0.15)';
-            for (let t = bar.start + beat; t < bar.start + bar.length - 1; t += beat) ctx.fillRect(Math.round(xOf(t)), RULER_H - 6, 1, 6);
+            for (let t = bar.start + beat; t < bar.start + bar.length - 1; t += beat) ctx.fillRect(Math.round(xOf(t)), BAR_H - 6, 1, 6);
           }
           if (meter !== prevMeter) {
             ctx.fillStyle = '#f5a524';
@@ -457,13 +502,30 @@ export function PianoRoll() {
         }
         prevMeter = meter;
       }
+      // chord lane
+      ctx.fillStyle = '#18191c';
+      ctx.fillRect(KEYS_W, BAR_H, w, CHORD_H);
+      ctx.fillStyle = 'rgba(255,255,255,0.08)';
+      ctx.fillRect(KEYS_W, BAR_H, w, 1);
+      for (const c of chords) {
+        const x0 = xOf(c.start);
+        const x1 = xOf(c.start + c.dur);
+        if (x1 < KEYS_W || x0 > w) continue;
+        const ok = !!c.parsed;
+        ctx.fillStyle = ok ? 'rgba(245,165,36,0.16)' : 'rgba(255,93,108,0.18)';
+        ctx.fillRect(x0 + 1, BAR_H + 2, Math.max(2, x1 - x0 - 2), CHORD_H - 4);
+        ctx.fillStyle = ok ? '#f5c46b' : '#ff8a95';
+        ctx.font = 'bold 11px ui-sans-serif, system-ui';
+        ctx.fillText(c.symbol, x0 + 5, BAR_H + 14, Math.max(0, x1 - x0 - 8));
+      }
+
       // cursor marker
       const cx = xOf(pos);
       ctx.fillStyle = heard !== undefined ? '#fff' : '#f5a524';
       ctx.beginPath();
-      ctx.moveTo(cx - 5, RULER_H - 8);
-      ctx.lineTo(cx + 5, RULER_H - 8);
-      ctx.lineTo(cx, RULER_H);
+      ctx.moveTo(cx - 5, BAR_H - 8);
+      ctx.lineTo(cx + 5, BAR_H - 8);
+      ctx.lineTo(cx, BAR_H);
       ctx.fill();
       ctx.restore();
 
@@ -472,6 +534,7 @@ export function PianoRoll() {
       ctx.fillStyle = '#7d838b';
       ctx.font = '10px ui-sans-serif, system-ui';
       if (!drums) ctx.fillText('Meter', 8, 13);
+      ctx.fillText('Chords', 8, BAR_H + 14);
     };
     const ro = new ResizeObserver(() => {
       resize();
@@ -542,16 +605,35 @@ export function PianoRoll() {
       useStore.getState().select(sel);
     };
 
-    /** Pitches drawn for a click on `pitch`: a chord when the chord stamp is on. */
-    const stamped = (track: Track, pitch: number) =>
-      track.kind === 'notes' ? stampChord(pitch, useStore.getState().chordStamp, useStore.getState().project.scale) : [pitch];
+    /** Pitches drawn for a click on `pitch` at `start`: snapped to the chord lane's tones, and a chord when the stamp is on. */
+    const stamped = (track: Track, pitch: number, start: number) => {
+      if (track.kind !== 'notes') return [pitch];
+      const s = useStore.getState();
+      const root = snapToScale(s.chordSnap ? snapToChord(pitch, start) : pitch, s.scaleLock ? s.project.scale : undefined);
+      return stampChord(root, s.chordStamp, s.project.scale);
+    };
+
+    /** Nearest pitch (preferring the lower one) that is a tone of the chord playing at `start`. */
+    const snapToChord = (pitch: number, start: number) => {
+      const s = useStore.getState();
+      const c = (selectedSection(s).chords ?? []).find((c) => start >= c.start && start < c.start + c.dur);
+      if (!c) return pitch;
+      try {
+        const chord = parseChord(c.symbol, s.project.scale);
+        const pcs = chord.intervals.map((i) => (chord.root + i) % 12);
+        for (let d = 0; d <= 6; d++) for (const p of [pitch - d, pitch + d]) if (p >= 0 && p <= 127 && pcs.includes(p % 12)) return p;
+      } catch {
+        /* invalid symbol: no snapping */
+      }
+      return pitch;
+    };
 
     /** Adds a note (or stamped chord) in draw mode unless one already starts on this cell. */
     const paintCell = (pitch: number, start: number) => {
       const { s, track, bars, length } = ctxState();
       if (!track || pitch === undefined || start >= length) return;
       const dur = newNoteLength(track, s.snap, bars, start, lastLen.current);
-      const fresh = stamped(track, pitch)
+      const fresh = stamped(track, pitch, start)
         .filter((p) => !track.notes.some((n) => n.pitch === p && n.start === start))
         .map((p) => ({ id: uid(), pitch: p, start, dur, vel: s.velocity }));
       if (fresh.length) s.setNotes(track.id, [...track.notes, ...fresh], false);
@@ -570,10 +652,10 @@ export function PianoRoll() {
         if (nx < ax - 3 || nx > bx + 3) return n;
         if (s.selection.size && !s.selection.has(n.id)) return n;
         const y = bx === ax ? by : ay + ((by - ay) * (nx - ax)) / (bx - ax);
-        const vel = velAt(y);
-        if (vel === n.vel) return n;
+        const value = velAt(y);
+        if (value === laneAmount(n, v.laneMode)) return n;
         changed = true;
-        return { ...n, vel };
+        return withLaneAmount(n, v.laneMode, value);
       });
       if (changed) s.setNotes(track.id, notes, false);
     };
@@ -606,9 +688,25 @@ export function PianoRoll() {
       if (!track) return;
       setMeterEdit(null);
       setLaneEdit(null);
+      setChordEdit(null);
       canvas.setPointerCapture(e.pointerId);
       const gridBottom = v.h - v.velH;
 
+      if (y >= BAR_H && y < RULER_H) {
+        if (x < kw()) return;
+        const tick = Math.max(0, Math.min(length - 1, tickAt(x)));
+        const chords = selectedSection(s).chords ?? [];
+        const hitChord = chords.find((c) => tick >= c.start && tick < c.start + c.dur);
+        if (hitChord) setChordEdit({ chord: hitChord, x: xOf(hitChord.start) });
+        else {
+          const start = snapTick(tick, s.snap > 1 ? Math.max(s.snap, TPW / 8) : TPW / 4, bars, 'floor');
+          const bar = barAtTick(bars, start);
+          const next = chords.find((c) => c.start > start)?.start ?? Infinity;
+          const dur = Math.min(next, bar.start + bar.length) - start;
+          setChordEdit({ chord: { id: '', symbol: '', start, dur }, x: xOf(start) });
+        }
+        return;
+      }
       if (y < RULER_H) {
         if (x < kw()) return;
         const bar = barAtTick(bars, Math.min(length - 1, Math.max(0, tickAt(x))));
@@ -702,7 +800,7 @@ export function PianoRoll() {
         const pitch = pitchAt(y);
         s.checkpoint();
         paintCell(pitch, start);
-        stamped(track, pitch).forEach((p) => preview(track, p));
+        stamped(track, pitch, start).forEach((p) => preview(track, p));
         drag.current = { kind: 'paint', pitch, last: start, free: e.altKey };
         return;
       }
@@ -713,7 +811,7 @@ export function PianoRoll() {
           track.kind === 'kit' || s.draw
             ? newNoteLength(track, s.snap, bars, start, lastLen.current)
             : Math.max(snapLength(s.snap, bars, start), lastLen.current);
-        const chord: Note[] = stamped(track, pitchAt(y)).map((pitch) => ({ id: uid(), pitch, start, dur, vel: s.velocity }));
+        const chord: Note[] = stamped(track, pitchAt(y), start).map((pitch) => ({ id: uid(), pitch, start, dur, vel: s.velocity }));
         const n = chord[0];
         s.checkpoint();
         s.setNotes(track.id, [...notes, ...chord], false);
@@ -804,8 +902,8 @@ export function PianoRoll() {
       }
       if (d.kind === 'vel') {
         const dv = (d.y0 - y) / (v.velH - 12);
-        const map = new Map(d.origs.map((n) => [n.id, Math.round(Math.max(0.01, Math.min(1, n.vel + dv)) * 100) / 100]));
-        s.setNotes(track.id, track.notes.map((n) => (map.has(n.id) ? { ...n, vel: map.get(n.id)! } : n)), false);
+        const map = new Map(d.origs.map((n) => [n.id, Math.round(Math.max(0.01, Math.min(1, laneAmount(n, v.laneMode) + dv)) * 100) / 100]));
+        s.setNotes(track.id, track.notes.map((n) => (map.has(n.id) ? withLaneAmount(n, v.laneMode, map.get(n.id)!) : n)), false);
         return;
       }
       const ids = new Set(d.origs.map((n) => n.id));
@@ -819,7 +917,10 @@ export function PianoRoll() {
         const lo = Math.min(...d.origs.map((n) => rowOf(n.pitch)));
         const hi = Math.max(...d.origs.map((n) => rowOf(n.pitch)));
         const dr = Math.max(-lo, Math.min(rows.length - 1 - hi, rowAt(y) - rowAt(d.y0)));
-        const moved = (p: number) => rows[rowOf(p) + dr] ?? p;
+        const scale = track.kind === 'notes' && s.scaleLock ? s.project.scale : undefined;
+        // in key: move by scale steps, so a dragged chord stays diatonic
+        const steps = scale ? scaleDistance(d.anchor.pitch, pitchAt(y), scale) : 0;
+        const moved = (p: number) => (scale ? scaleStep(snapToScale(p, scale), steps, scale) : rows[rowOf(p) + dr] ?? p);
         s.setNotes(
           track.id,
           track.notes.map((n) => (ids.has(n.id) ? { ...n, start: orig.get(n.id)!.start + dt, pitch: moved(orig.get(n.id)!.pitch) } : n)),
@@ -876,6 +977,12 @@ export function PianoRoll() {
   }, []);
 
   const [velOpen, setVelOpen] = useState(view.current.velH === VEL_OPEN);
+  const [laneMode, setLaneMode] = useState<LaneMode>('velocity');
+  const pickLane = (mode: LaneMode) => {
+    setLaneMode(mode);
+    view.current.laneMode = mode;
+    if (!velOpen) toggleVelocity();
+  };
   const toggleVelocity = () => {
     const open = !velOpen;
     setVelOpen(open);
@@ -897,18 +1004,26 @@ export function PianoRoll() {
   return (
     <div className="roll">
       <canvas ref={canvasRef} />
-      <button
-        className="vel-toggle"
-        style={{ bottom: (velOpen ? VEL_OPEN : VEL_CLOSED) - 19 }}
-        onClick={toggleVelocity}
-        title={velOpen ? 'Collapse the velocity lane' : 'Show the velocity lane'}
-      >
-        {velOpen ? '▾' : '▸'} Velocity
-      </button>
+      <div className="lane-tabs" style={{ bottom: (velOpen ? VEL_OPEN : VEL_CLOSED) - 19 }}>
+        <button onClick={toggleVelocity} title={velOpen ? 'Collapse the lane' : 'Show the lane'}>
+          {velOpen ? '▾' : '▸'}
+        </button>
+        <button className={laneMode === 'velocity' ? 'on' : ''} onClick={() => pickLane('velocity')} title="Edit note velocity">
+          Velocity
+        </button>
+        <button
+          className={laneMode === 'chance' ? 'on' : ''}
+          onClick={() => pickLane('chance')}
+          title="Edit note probability: notes below 100% play only sometimes (Strudel's ?)"
+        >
+          Chance
+        </button>
+      </div>
       <button className="fit-btn" style={{ bottom: (velOpen ? VEL_OPEN : VEL_CLOSED) + 6 }} onClick={fit} title="Zoom to fit song">
         Fit
       </button>
       {meterEdit && <MeterPopover bar={meterEdit.bar} x={meterEdit.x} onClose={() => setMeterEdit(null)} />}
+      {chordEdit && <ChordEditPopover at={chordEdit.chord} x={chordEdit.x} onClose={() => setChordEdit(null)} />}
       {track?.kind === 'kit' && (
         <button
           className="add-lane"

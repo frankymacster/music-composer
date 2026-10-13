@@ -100,3 +100,19 @@ describe('quantize', () => {
     expect(notes()[0].start).toBe(110);
   });
 });
+
+describe('in key', () => {
+  it('live notes snap to the scale when locked', () => {
+    const s = useStore.getState();
+    s.setScale({ root: 9, mode: 'minor' });
+    s.set({ scaleLock: true });
+    live.noteOn('x', 61, 0.8);
+    live.noteOff('x');
+    expect(notes()[0].pitch).toBe(60);
+    s.set({ scaleLock: false });
+    live.noteOn('y', 61, 0.8);
+    live.noteOff('y');
+    expect(notes()[1].pitch).toBe(61);
+    s.setScale(undefined);
+  });
+});

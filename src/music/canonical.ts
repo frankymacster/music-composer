@@ -2,12 +2,13 @@
 //   silence | (voice | stack(voice, ...))[.slow(num)]
 //   voice = note(mini)[.velocity(num|mini)]             (instrument tracks)
 //         | s(mini)[.bank(str)][.velocity(num|mini)]    (kit tracks)
-// Anything else (transforms, randomness, alternation) makes it a code track.
+// Anything else (transforms, alternation, other randomness) makes it a code track.
 
 import type { TrackKind } from './kit';
 
-const NOTE_MINI = /^(?:\s|[a-gA-G][#bsf]*-?\d*|\d+(?:\.\d+)?|[~\-_@[\],.*!])*$/;
-const KIT_MINI = /^(?:\s|[A-Za-z][\w#]*(?::\d+)?|\d+(?:\.\d+)?|[~\-_@[\],.*!])*$/;
+// `?0.3` (chance of dropping a note) is allowed: notes are read back with their chance.
+const NOTE_MINI = /^(?:\s|[a-gA-G][#bsf]*-?\d*|\d+(?:\.\d+)?|\?(?:\d*\.?\d+)?|[~\-_@[\],.*!])*$/;
+const KIT_MINI = /^(?:\s|[A-Za-z][\w#]*(?::\d+)?|\d+(?:\.\d+)?|\?(?:\d*\.?\d+)?|[~\-_@[\],.*!])*$/;
 
 export function isGridCode(code: string, kind: TrackKind = 'notes'): boolean {
   const kit = kind === 'kit';

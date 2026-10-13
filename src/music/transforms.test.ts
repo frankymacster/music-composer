@@ -47,3 +47,20 @@ describe('transforms', () => {
     expect(scaleStep(60, 1, undefined)).toBe(61);
   });
 });
+
+describe('scale lock helpers', () => {
+  it('snaps, measures and walks the scale', async () => {
+    const { snapToScale, scaleDistance, scaleDegree } = await import('./scale');
+    const aMinor = { root: 9, mode: 'minor' };
+    expect(snapToScale(61, aMinor)).toBe(60);
+    expect(snapToScale(66, aMinor)).toBe(65);
+    expect(scaleDistance(57, 64, aMinor)).toBe(4);
+    expect(scaleDistance(64, 57, aMinor)).toBe(-4);
+    expect([0, 1, 2, 7].map((i) => scaleDegree(i, 60, aMinor))).toEqual([57, 59, 60, 69]);
+  });
+  it('inverts by scale degree', () => {
+    const cMajor = { root: 0, mode: 'major' };
+    expect(invert([n(60, 0, 1), n(64, 1, 1), n(67, 2, 1)], cMajor).map((x) => x.pitch)).toEqual([67, 64, 60]);
+    expect(invert([n(60, 0, 1), n(62, 1, 1), n(67, 2, 1)], cMajor).map((x) => x.pitch)).toEqual([67, 65, 60]);
+  });
+});

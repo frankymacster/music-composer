@@ -13,7 +13,23 @@ import type { Note } from './music/codegen';
 import { rowsFor } from './music/kit';
 import { scaleStep } from './music/transforms';
 import * as live from './live';
-import { CHORD_STAMPS, CYCLE_CHORD, OPEN_CHORDS, OPEN_EUCLID, TRANSFORMS, gridStep, matches, toggleTriplet } from './commands';
+import {
+  CHORD_STAMPS,
+  CYCLE_CHORD,
+  OPEN_CHORDS,
+  OPEN_EUCLID,
+  OPEN_GENERATE,
+  REROLL,
+  TOGGLE_CHORD_SNAP,
+  ADD_VARIATION,
+  variationIndex,
+  TRANSFORMS,
+  gridStep,
+  matches,
+  toggleTriplet,
+} from './commands';
+import { newSeed } from './music/generators';
+import { lockedScale } from './live';
 import { TPW } from './music/time';
 import { ShortcutsOverlay } from './components/ShortcutsOverlay';
 
@@ -22,8 +38,7 @@ let clipboard: Note[] = [];
 let lastSnap = TPW / 16;
 
 function handleKey(e: KeyboardEvent) {
-  const target = e.target as HTMLElement;
-  if (target.closest('input, select, textarea, .cm-editor')) return;
+  if (e.target instanceof Element && e.target.closest('input, select, textarea, .cm-editor')) return;
   if (live.handleKeyDown(e)) return;
   const s = useStore.getState();
   const track = selectedTrack(s);
@@ -84,6 +99,16 @@ function handleKey(e: KeyboardEvent) {
     s.set({ draw: !s.draw });
     return;
   }
+  if (track && variationIndex(e) >= 0) {
+    e.preventDefault();
+    s.selectVariation(track.id, variationIndex(e));
+    return;
+  }
+  if (track && matches(e, ADD_VARIATION)) {
+    e.preventDefault();
+    s.addVariation(track.id);
+    return;
+  }
   if (!track || track.mode !== 'grid') return;
   const sel = track.notes.filter((n) => s.selection.has(n.id));
   const others = track.notes.filter((n) => !s.selection.has(n.id));
@@ -91,6 +116,21 @@ function handleKey(e: KeyboardEvent) {
   if (matches(e, OPEN_CHORDS) && track.kind === 'notes') {
     e.preventDefault();
     s.set({ popover: s.popover === 'chords' ? null : 'chords' });
+    return;
+  }
+  if (matches(e, OPEN_GENERATE)) {
+    e.preventDefault();
+    s.set({ popover: s.popover === 'generate' ? null : 'generate' });
+    return;
+  }
+  if (matches(e, REROLL) && track.generator) {
+    e.preventDefault();
+    s.generateClip(track.id, { ...track.generator, seed: newSeed() });
+    return;
+  }
+  if (matches(e, TOGGLE_CHORD_SNAP)) {
+    e.preventDefault();
+    s.set({ chordSnap: !s.chordSnap });
     return;
   }
   if (matches(e, OPEN_EUCLID)) {
@@ -101,7 +141,7 @@ function handleKey(e: KeyboardEvent) {
   const transform = TRANSFORMS.find((t) => matches(e, t.combo));
   if (transform) {
     e.preventDefault();
-    s.transformNotes(track.id, (notes) => transform.run(notes, s.snap));
+    s.transformNotes(track.id, (notes) => transform.run(notes, s.snap, lockedScale(s)));
     return;
   }
   const mapSel = (fn: (n: Note) => Note) => s.setNotes(track.id, track.notes.map((n) => (s.selection.has(n.id) ? fn(n) : n)));

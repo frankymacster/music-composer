@@ -158,9 +158,10 @@ export const engine = {
 
   /**
    * Switches to `pattern` looping `loop` (starting at loop.start) at the first boundary from `boundaries`
-   * (positions in the current loop, cycles) that hasn't been scheduled yet. Returns false when stopped.
+   * (positions in the current loop, cycles) that hasn't been scheduled yet. With `keep`, the position and loop
+   * carry on unchanged (only the music changes). Returns false when stopped.
    */
-  switchAt(boundaries: number[], pattern: Pattern, next: Loop, tag?: string): boolean {
+  switchAt(boundaries: number[], pattern: Pattern, next: Loop, tag?: string, keep = false): boolean {
     const raw = heardRaw();
     if (raw === undefined) return false;
     const r = Math.max(0, raw);
@@ -174,7 +175,7 @@ export const engine = {
       .sort((a, b) => a - b);
     const at = ahead[0] ?? earliest;
     segs = segs.filter((s) => s.from < at);
-    segs.push({ from: at, base: pattern, loop: next, shift: mod(-at, next.len), tag });
+    segs.push(keep ? { ...g, from: at, base: pattern } : { from: at, base: pattern, loop: next, shift: mod(-at, next.len), tag });
     apply();
     return true;
   },

@@ -10,6 +10,7 @@ import { TPW } from '../music/time';
 import { engine } from '../strudel/engine';
 import { songCode } from '../songCode';
 import { download } from '../files';
+import { GENERATORS, newSeed } from '../music/generators';
 
 const setActive = StateEffect.define<[number, number][]>();
 const activeMark = Decoration.mark({ class: 'cm-active-hap' });
@@ -82,6 +83,7 @@ function useHapHighlight(ref: React.RefObject<ReactCodeMirrorRef | null>, track:
 function TrackEditor({ track }: { track: Track }) {
   const setCode = useStore((s) => s.setCode);
   const bake = useStore((s) => s.bake);
+  const generateClip = useStore((s) => s.generateClip);
   const [doc, setDoc] = useState(track.code);
   const sent = useRef(track.code);
   const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
@@ -118,6 +120,18 @@ function TrackEditor({ track }: { track: Track }) {
 
   return (
     <div className="editor-wrap">
+      {track.generator && (
+        <div className="mode-banner generated">
+          <b>🎲 GENERATED</b>
+          <span>
+            {GENERATORS[track.generator.type].label} · {GENERATORS[track.generator.type].styles.find(([id]) => id === track.generator!.style)?.[1]} —
+            follows the chord lane; editing the notes freezes it.
+          </span>
+          <button onClick={() => generateClip(track.id, { ...track.generator!, seed: newSeed() })} title="New random seed (⌥⇧G)">
+            🎲 Reroll
+          </button>
+        </div>
+      )}
       <div className={`mode-banner ${track.mode}`}>
         {track.mode === 'grid' ? (
           <>

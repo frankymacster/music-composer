@@ -43,6 +43,28 @@ Web MIDI needs Chrome, Edge or Firefox (not Safari).
   bars, echo, filter sweep — appended as Strudel code (`.swingBy(…)`, `.degradeBy(…)`, …) and visible in the export.
 - **Ghosts**: other instrument tracks' notes shown faintly in the roll. With a Scale set, ↑/↓ move notes by scale step.
 
+## Key and scale
+
+**Key** (roll toolbar) sets a root and scale (major/minor modes, pentatonics, blues, harmonic major, phrygian dominant,
+whole tone, hirajoshi…). It shades in-key rows, makes the chord stamp diatonic, sets the key for Roman numerals,
+makes ↑/↓ move by scale step, and keeps generated melodies in key. With **In key** on (default): drawn and dragged
+notes snap to the scale, the computer keyboard plays consecutive scale notes (every key is "right"), MIDI input snaps
+to the nearest scale note, and Invert mirrors by scale degree.
+
+## Chords, generators, chance, variations
+
+- **Chord lane** (row under the bar numbers): the section's harmony. Click empty space to add a chord, click a chord to
+  change or delete it; **Chords…** can fill it from a progression. Chord tones are tinted in the roll, and
+  **Chord tones** (⌥T) snaps drawn notes to them.
+- **🎲 Generate…** (⌥G): bass (groove, roots, pulse, root–fifth, octaves, walking), arpeggio, pads (sustained,
+  off-beat, Charleston, stabs), melody, and drum grooves (house, hip-hop, rock, breakbeat, optional fill/crash). Parts
+  follow the chord lane and the key: change a chord and generated parts update. **Reroll** (⌥⇧G) tries a new seed;
+  editing the notes by hand freezes the part.
+- **Chance**: the bottom lane's *Chance* tab sets per-note probability; it becomes Strudel's `?` (`c4?0.3` = dropped
+  30% of the time) and stays grid-editable.
+- **Clip variations**: **+** (⌥=) copies the clip into a new version; **A B C…** (⌥1–⌥9) switch between them — while
+  playing, on the next bar. ⌥-click a chip to delete it.
+
 ## Playing and recording
 
 - **⌨ Keys** (M): the computer keyboard plays the selected track, Ableton-style. `A W S E D F T G Y H U J K O L P ;`

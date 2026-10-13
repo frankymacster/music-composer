@@ -1,4 +1,5 @@
 import { computeBars, songLength, type Bar, type MeterChange } from './time';
+import type { ChordEvent } from './generators';
 
 /** A part of the song (Verse, Chorus…) with its own length and meters; every track has one clip per section. */
 export interface Section {
@@ -7,6 +8,8 @@ export interface Section {
   color: string;
   bars: number;
   meters: MeterChange[];
+  /** Chord lane: the section's harmony, read by generators and chord-tone snapping. */
+  chords?: ChordEvent[];
 }
 
 export interface Instance {

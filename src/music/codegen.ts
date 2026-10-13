@@ -7,6 +7,8 @@ export interface Note {
   start: number;
   dur: number;
   vel: number;
+  /** Probability of playing (default 1); emitted as Strudel's `?` (chance of being dropped). */
+  chance?: number;
 }
 
 const NAMES = ['c', 'c#', 'd', 'd#', 'e', 'f', 'f#', 'g', 'g#', 'a', 'a#', 'b'];
@@ -26,16 +28,18 @@ interface Chord {
   start: number;
   dur: number;
   vel: number;
+  chance: number;
   pitches: number[];
 }
 
 function toChords(notes: Note[]): Chord[] {
   const map = new Map<string, Chord>();
   for (const n of notes) {
-    const key = `${n.start}|${n.dur}|${n.vel}`;
+    const chance = n.chance ?? 1;
+    const key = `${n.start}|${n.dur}|${n.vel}|${chance}`;
     const c = map.get(key);
     if (c) c.pitches.push(n.pitch);
-    else map.set(key, { start: n.start, dur: n.dur, vel: n.vel, pitches: [n.pitch] });
+    else map.set(key, { start: n.start, dur: n.dur, vel: n.vel, chance, pitches: [n.pitch] });
   }
   const chords = [...map.values()];
   chords.forEach((c) => c.pitches.sort((a, b) => a - b));
@@ -115,11 +119,16 @@ interface Voice {
 
 function renderVoice({ chords, lane }: Voice, bars: Bar[], length: number, step: number, indent: string): string {
   const tokens = voiceTokens(chords, bars, length, step);
-  const name = lane ? () => lane.sample : pitchName;
+  const plain = lane ? () => lane.sample : pitchName;
   const fn = lane ? 's' : 'note';
   const notes = renderMini(
     tokens,
-    (t) => (!t.chord ? '~' : t.chord.pitches.length === 1 ? name(t.chord.pitches[0]) : `[${t.chord.pitches.map(name).join(',')}]`),
+    (t) => {
+      if (!t.chord) return '~';
+      const drop = t.chord.chance < 1 ? `?${fmtNum(1 - t.chord.chance)}` : '';
+      const name = (p: number) => plain(p) + drop;
+      return t.chord.pitches.length === 1 ? name(t.chord.pitches[0]) : `[${t.chord.pitches.map(name).join(',')}]`;
+    },
     indent + ' '.repeat(fn.length + 2),
   );
   let code = `${fn}(${notes})`;

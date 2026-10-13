@@ -160,6 +160,19 @@ function launchSelected() {
   engine.switchAt(bounds.length ? bounds : [loop.start], sectionPattern(s.selectedSectionId), loopRange(), s.selectedSectionId);
 }
 
+/** A clip variation was switched while playing: the new music starts on the next bar, the position carries on. */
+function switchOnNextBar() {
+  const s = state();
+  const bars = s.playMode === 'song' ? songTimeline(s.project).bars : sectionInfo(findSection(s.project, engine.tag() ?? s.selectedSectionId)).bars;
+  engine.switchAt(
+    bars.map((b) => b.start / TPW),
+    currentPattern(),
+    engine.loop,
+    undefined,
+    true,
+  );
+}
+
 export function startSync() {
   rebuild();
   useStore.subscribe((s, prev) => {
@@ -170,6 +183,10 @@ export function startSync() {
     }
     if (s.selectedSectionId !== prev.selectedSectionId && s.playMode === 'section' && s.playing) {
       launchSelected();
+      return;
+    }
+    if (s.variationSwitch !== prev.variationSwitch && s.playing) {
+      switchOnNextBar();
       return;
     }
     const contentChanged =

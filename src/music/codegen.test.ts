@@ -1,6 +1,6 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import { baseScope } from '../strudel/scope';
-import { compile, detectKind, fitsGrid, hapsToNotes, kitPitch, kitSounds, notePitch } from '../strudel/compile';
+import { compile, detectKind, fitsGrid, hapsToNotes, kitPitch, kitSounds, notePitch, withoutChance } from '../strudel/compile';
 import { defaultLanes, type KitLane } from './kit';
 import { generateTrackCode, type Note } from './codegen';
 import { isGridCode } from './canonical';
@@ -11,18 +11,21 @@ beforeAll(async () => {
 });
 
 const strip = (ns: Note[]) =>
-  ns.map(({ pitch, start, dur, vel }) => ({ pitch, start, dur, vel })).sort((a, b) => a.start - b.start || a.pitch - b.pitch);
+  ns
+    .map(({ pitch, start, dur, vel, chance }) => ({ pitch, start, dur, vel, chance: chance ?? 1 }))
+    .sort((a, b) => a.start - b.start || a.pitch - b.pitch);
 
 function roundTrip(notes: Note[], song: Song, lanes?: KitLane[]) {
   const bars = computeBars(song);
   const length = songLength(bars);
   const code = generateTrackCode(notes, bars, length, lanes);
   expect(isGridCode(code, lanes ? 'kit' : 'notes')).toBe(true);
-  const c = compile(code);
+  expect(compile(code).ok).toBe(true);
+  const c = compile(withoutChance(code));
   if (!c.ok) throw new Error(c.error + '\n' + code);
   const pitchOf = lanes ? kitPitch(lanes) : notePitch;
   expect(fitsGrid(c.pattern, length, pitchOf)).toBe(true);
-  expect(strip(hapsToNotes(c.pattern, length, pitchOf))).toEqual(strip(notes));
+  expect(strip(hapsToNotes(c.pattern, length, pitchOf, code))).toEqual(strip(notes));
   return code;
 }
 
@@ -54,6 +57,18 @@ describe('codegen round-trip', () => {
   it('collapses runs of empty bars into one rest', () => {
     const code = roundTrip([n(60, 240, 480), n(62, 7 * 1920 + 960, 480)], { bpm: 120, bars: 8, meters: [{ bar: 0, num: 4, den: 4 }] });
     expect(code).toBe('note(`~ c4@2 ~@5\n      ~@48\n      ~@4 d4@2 ~@2`).velocity(0.8).slow(8)');
+  });
+
+  it('note chance becomes ? and reads back', () => {
+    const notes = [
+      { ...n(60, 0, 480), chance: 0.7 },
+      { ...n(64, 0, 480), chance: 0.7 },
+      n(67, 480, 480),
+      { ...n(72, 960, 240), chance: 0.25 },
+    ];
+    const code = roundTrip(notes, { bpm: 120, bars: 1, meters: [{ bar: 0, num: 4, den: 4 }] });
+    expect(code).toContain('[c4?0.3,e4?0.3]@2');
+    expect(code).toContain('c5?0.75');
   });
 
   it('empty track', () => {
@@ -116,7 +131,8 @@ describe('isGridCode', () => {
     ['stack(note("c4"), note("e4").velocity("0.5 1"),).slow(4)', true],
     ['note("c4 e4").fast(2)', false],
     ['note("<c4 e4>")', false],
-    ['note("c4?")', false],
+    ['note("c4?")', true],
+    ['note("c4 e4").sometimes(rev)', false],
     ['s("bd sd")', false],
   ])('%s → %s', (code, expected) => {
     expect(isGridCode(code)).toBe(expected);

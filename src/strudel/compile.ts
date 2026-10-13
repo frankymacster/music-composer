@@ -76,7 +76,11 @@ export function fitsGrid(pattern: Pattern, length: number, pitchOf: PitchOf): bo
   return onsetHaps(pattern, length).every((h) => pitchOf(h.value) !== undefined);
 }
 
-export function hapsToNotes(pattern: Pattern, length: number, pitchOf: PitchOf = notePitch): Note[] {
+/**
+ * Notes of a pattern over [0, length). With `source`, the code the pattern came from, each note's chance is read
+ * from a `?x` right after its token (the pattern itself must be compiled with those removed, see withoutChance).
+ */
+export function hapsToNotes(pattern: Pattern, length: number, pitchOf: PitchOf = notePitch, source?: string): Note[] {
   const notes: Note[] = [];
   let i = 0;
   for (const hap of onsetHaps(pattern, length)) {
@@ -85,7 +89,16 @@ export function hapsToNotes(pattern: Pattern, length: number, pitchOf: PitchOf =
     const start = Math.round(hap.whole.begin.valueOf() * TPW);
     const end = Math.round(hap.whole.end.valueOf() * TPW);
     const vel = typeof hap.value.velocity === 'number' ? hap.value.velocity : 1;
-    notes.push({ id: `h${i++}`, pitch, start, dur: Math.max(1, end - start), vel });
+    const note: Note = { id: `h${i++}`, pitch, start, dur: Math.max(1, end - start), vel };
+    const loc = hap.context?.locations?.[0];
+    const drop = source && loc ? /^\?(\d*\.?\d+)?/.exec(source.slice(loc.end)) : null;
+    if (drop) note.chance = Math.round((1 - (drop[1] ? Number(drop[1]) : 0.5)) * 100) / 100;
+    notes.push(note);
   }
   return notes.sort((a, b) => a.start - b.start || a.pitch - b.pitch);
 }
+
+const CHANCE = /\?(\d*\.?\d+)?/g;
+
+/** The code with every `?x` blanked out (same length, so source locations still match). */
+export const withoutChance = (code: string) => code.replace(CHANCE, (m) => ' '.repeat(m.length));

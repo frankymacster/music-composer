@@ -1,5 +1,5 @@
 import type { Note } from './codegen';
-import { inScale, type Scale } from './scale';
+import { inScale, scaleDistance, snapToScale, type Scale } from './scale';
 
 /** Pure note transforms used by the roll's Transform menu. Each returns the transformed copies of `notes`. */
 
@@ -15,12 +15,13 @@ export function reverse(notes: Note[]): Note[] {
   return notes.map((n) => ({ ...n, start: start + end - (n.start + n.dur) }));
 }
 
-/** Mirrors pitches around the middle of the selection's range. */
-export function invert(notes: Note[]): Note[] {
+/** Mirrors pitches around the middle of the selection's range; with a scale, by scale degree so notes stay in key. */
+export function invert(notes: Note[], scale?: Scale): Note[] {
   if (!notes.length) return notes;
   const lo = Math.min(...notes.map((n) => n.pitch));
   const hi = Math.max(...notes.map((n) => n.pitch));
-  return notes.map((n) => ({ ...n, pitch: hi + lo - n.pitch }));
+  if (!scale) return notes.map((n) => ({ ...n, pitch: hi + lo - n.pitch }));
+  return notes.map((n) => ({ ...n, pitch: scaleStep(snapToScale(hi, scale), -scaleDistance(lo, n.pitch, scale), scale) }));
 }
 
 /** Scales time around the selection start: 0.5 = double speed, 2 = half speed. */

@@ -67,7 +67,16 @@ function LiveControls() {
         }}
         title="Computer keyboard plays notes (M). A–; = notes, Z/X = octave, C/V = velocity"
       >
-        ⌨ Keys{s.keyboard ? ` ${track?.kind === 'kit' ? 'kit' : ROOTS[0] + s.octave} · vel ${Math.round(s.velocity * 127)}` : ''}
+        ⌨ Keys
+        {s.keyboard
+          ? ` ${
+              track?.kind === 'kit'
+                ? 'kit'
+                : s.scaleLock && s.project.scale
+                  ? `${ROOTS[s.project.scale.root]} ${s.project.scale.mode} · oct ${s.octave}`
+                  : ROOTS[0] + s.octave
+            } · vel ${Math.round(s.velocity * 127)}`
+          : ''}
       </button>
     </div>
   );

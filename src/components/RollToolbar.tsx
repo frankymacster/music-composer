@@ -6,6 +6,97 @@ import { TRANSFORMS, stepTicks, OPEN_CHORDS, OPEN_EUCLID, CYCLE_CHORD } from '..
 import { laneLabel } from '../music/kit';
 import { pitchLabel } from '../music/codegen';
 import type { ChordStamp } from '../music/chords';
+import { GENERATORS, newSeed, type GeneratorSpec, type GeneratorType } from '../music/generators';
+import { TPW } from '../music/time';
+import { OPEN_GENERATE, REROLL, TOGGLE_CHORD_SNAP } from '../commands';
+
+const lastSpecs: Partial<Record<GeneratorType, GeneratorSpec>> = {};
+
+export function GeneratePopover({ track, onClose }: { track: TrackView; onClose: () => void }) {
+  const s = useStore();
+  const types = (Object.keys(GENERATORS) as GeneratorType[]).filter((t) => GENERATORS[t].kinds.includes(track.kind));
+  const current = track.generator && types.includes(track.generator.type) ? track.generator : undefined;
+  const [spec, setSpec] = useState<GeneratorSpec>(
+    () => current ?? lastSpecs[types[0]] ?? { type: types[0], style: GENERATORS[types[0]].styles[0][0], seed: newSeed(), rate: TPW / 16, density: 0.55 },
+  );
+  const update = (patch: Partial<GeneratorSpec>) => setSpec((x) => ({ ...x, ...patch }));
+  const run = (next: GeneratorSpec) => {
+    lastSpecs[next.type] = next;
+    setSpec(next);
+    s.generateClip(track.id, next);
+  };
+  const chords = s.project.sections.find((x) => x.id === s.selectedSectionId)?.chords?.length ?? 0;
+  return (
+    <div className="popover generate" onKeyDown={(e) => e.key === 'Escape' && onClose()}>
+      <div className="popover-title">Generate</div>
+      <div className="row">
+        <select
+          value={spec.type}
+          onChange={(e) => {
+            const type = e.target.value as GeneratorType;
+            setSpec(lastSpecs[type] ?? { ...spec, type, style: GENERATORS[type].styles[0][0] });
+          }}
+        >
+          {types.map((t) => (
+            <option key={t} value={t}>
+              {GENERATORS[t].label}
+            </option>
+          ))}
+        </select>
+        <select value={spec.style} onChange={(e) => update({ style: e.target.value })}>
+          {GENERATORS[spec.type].styles.map(([id, label]) => (
+            <option key={id} value={id}>
+              {label}
+            </option>
+          ))}
+        </select>
+      </div>
+      {(spec.type === 'arp' || spec.type === 'melody') && (
+        <label>
+          Rate
+          <select value={spec.rate ?? TPW / 16} onChange={(e) => update({ rate: +e.target.value })}>
+            <option value={TPW / 8}>1/8</option>
+            <option value={TPW / 12}>1/8T</option>
+            <option value={TPW / 16}>1/16</option>
+          </select>
+        </label>
+      )}
+      {spec.type === 'melody' && (
+        <label>
+          Density {Math.round((spec.density ?? 0.55) * 100)}%
+          <input type="range" min={0.15} max={0.9} step={0.05} value={spec.density ?? 0.55} onChange={(e) => update({ density: +e.target.value })} />
+        </label>
+      )}
+      {spec.type === 'drums' && (
+        <div className="row">
+          <label className="check">
+            <input type="checkbox" checked={!!spec.fill} onChange={(e) => update({ fill: e.target.checked })} /> Fill in last bar
+          </label>
+          <label className="check">
+            <input type="checkbox" checked={!!spec.crash} onChange={(e) => update({ crash: e.target.checked })} /> Crash
+          </label>
+        </div>
+      )}
+      <div className="hint">
+        {spec.type === 'drums'
+          ? 'Uses the kit lanes bd, sd/cp, hh, oh, toms, cr.'
+          : chords
+            ? `Follows the ${chords} chord${chords === 1 ? '' : 's'} in this section's chord lane — change them and the part updates.`
+            : 'No chord lane in this section yet: uses the key\'s tonic chord. Set chords with Chords… or the lane above the grid.'}
+        {' '}Editing the notes by hand stops it following.
+      </div>
+      <div className="row">
+        <button className="primary" onClick={() => run(spec)}>
+          Generate
+        </button>
+        <button onClick={() => run({ ...spec, seed: newSeed() })} title={`Same settings, new random seed (${REROLL.label})`}>
+          🎲 Reroll
+        </button>
+        <button onClick={onClose}>Close</button>
+      </div>
+    </div>
+  );
+}
 
 const CHORD_LENGTHS: { label: string; value: { bars: number } | { beats: number } }[] = [
   { label: '1 bar each', value: { bars: 1 } },
@@ -19,12 +110,14 @@ function ChordsPopover({ track, onClose }: { track: TrackView; onClose: () => vo
   const [text, setText] = useState(() => localStorage.getItem('music-composer:last-progression') ?? 'Am F C G');
   const [len, setLen] = useState(0);
   const [replace, setReplace] = useState(true);
+  const [lane, setLane] = useState(true);
+  const [writeNotes, setWriteNotes] = useState(true);
   const [bass, setBass] = useState('');
   const [error, setError] = useState<string>();
   const others = s.project.tracks.filter((t) => t.id !== track.id && t.kind === 'notes');
   const key = s.project.scale;
   const apply = () => {
-    const err = s.writeProgression(track.id, text, CHORD_LENGTHS[len].value, replace, bass || undefined);
+    const err = s.writeProgression(track.id, text, CHORD_LENGTHS[len].value, { lane, notes: writeNotes, replace, bassTrackId: bass || undefined });
     setError(err);
     if (!err) {
       try {
@@ -60,6 +153,14 @@ function ChordsPopover({ track, onClose }: { track: TrackView; onClose: () => vo
         </select>
         <label className="check">
           <input type="checkbox" checked={replace} onChange={(e) => setReplace(e.target.checked)} /> Replace notes
+        </label>
+      </div>
+      <div className="row">
+        <label className="check" title="Set the section's chord lane (generators and chord-tone snapping follow it)">
+          <input type="checkbox" checked={lane} onChange={(e) => setLane(e.target.checked)} /> Chord lane
+        </label>
+        <label className="check">
+          <input type="checkbox" checked={writeNotes} onChange={(e) => setWriteNotes(e.target.checked)} /> Write chords here
         </label>
       </div>
       <label>
@@ -153,12 +254,36 @@ export function RollToolbar() {
   const scale = s.project.scale;
   const editable = track?.mode === 'grid';
   const euclidOpen = s.popover === 'euclid';
+  const generateOpen = s.popover === 'generate';
   const chordsOpen = s.popover === 'chords';
   const setEuclidOpen = (open: boolean) => s.set({ popover: open ? 'euclid' : null });
   const setChordsOpen = (open: boolean) => s.set({ popover: open ? 'chords' : null });
 
+  const variations = track?.variations;
+  const active = track?.variation ?? 0;
   return (
     <div className="roll-toolbar">
+      {track && (
+        <span className="variations" title="Clip variations: alternative versions of this clip (⌥1–⌥9 switch, ⌥= adds). While playing, switches land on the next bar.">
+          {variations ? (
+            variations.map((_, i) => (
+              <button
+                key={i}
+                className={`var-chip ${i === active ? 'on' : ''}`}
+                onClick={(e) => (e.altKey ? confirm(`Delete variation ${String.fromCharCode(65 + i)}?`) && s.removeVariation(track.id, i) : s.selectVariation(track.id, i))}
+                title={`Variation ${String.fromCharCode(65 + i)} (⌥${i + 1}) · ⌥-click to delete`}
+              >
+                {String.fromCharCode(65 + i)}
+              </button>
+            ))
+          ) : (
+            <span className="var-label">Var</span>
+          )}
+          <button className="var-chip" onClick={() => s.addVariation(track.id)} title="New variation: a copy of this clip (⌥=)">
+            +
+          </button>
+        </span>
+      )}
       <label title="Grid: , finer · . coarser · / triplet · \\ snap on/off">
         Snap
         <select value={s.snap} onChange={(e) => s.set({ snap: +e.target.value })}>
@@ -179,13 +304,13 @@ export function RollToolbar() {
         Ghosts
       </button>
       <span className="sep" />
-      <label title="Scale highlighting">
-        Scale
+      <label title="Key and scale: highlights in-key rows; chords, generators and ↑/↓ follow it">
+        Key
         <select
           value={scale ? scale.root : ''}
           onChange={(e) => s.setScale(e.target.value === '' ? undefined : { root: +e.target.value, mode: scale?.mode ?? 'major' })}
         >
-          <option value="">—</option>
+          <option value="">none</option>
           {ROOTS.map((r, i) => (
             <option key={r} value={i}>
               {r}
@@ -200,6 +325,15 @@ export function RollToolbar() {
           </select>
         )}
       </label>
+      {scale && (
+        <button
+          className={`toggle-btn ${s.scaleLock ? 'on' : ''}`}
+          onClick={() => s.set({ scaleLock: !s.scaleLock })}
+          title="In key: drawn and dragged notes snap to the scale, the computer keyboard plays scale notes, MIDI input snaps, Invert stays in key"
+        >
+          In key
+        </button>
+      )}
       {track?.kind === 'notes' && (
         <>
           <label title={`Drawn notes become chords: diatonic when a Scale is set (${CYCLE_CHORD.label} cycles)`}>
@@ -211,6 +345,13 @@ export function RollToolbar() {
               <option value="sus4">sus4</option>
             </select>
           </label>
+          <button
+            className={`toggle-btn ${s.chordSnap ? 'on' : ''}`}
+            onClick={() => s.set({ chordSnap: !s.chordSnap })}
+            title={`Drawn notes snap to the chord lane's tones (${TOGGLE_CHORD_SNAP.label})`}
+          >
+            Chord tones
+          </button>
           <span className="anchor">
             <button disabled={track.mode === 'code'} onClick={() => setChordsOpen(!chordsOpen)} title={`Write a chord progression into this section (${OPEN_CHORDS.label})`}>
               Chords…
@@ -239,7 +380,7 @@ export function RollToolbar() {
         disabled={!editable || !track?.notes.length}
         onChange={(e) => {
           const t = TRANSFORMS[+e.target.value];
-          if (t && track) s.transformNotes(track.id, (notes) => t.run(notes, s.snap));
+          if (t && track) s.transformNotes(track.id, (notes) => t.run(notes, s.snap, s.scaleLock ? s.project.scale : undefined));
         }}
         title="Transform the selected notes (all notes if none selected)"
       >
@@ -250,6 +391,16 @@ export function RollToolbar() {
           </option>
         ))}
       </select>
+      <span className="anchor">
+        <button
+          disabled={!track}
+          onClick={() => s.set({ popover: generateOpen ? null : 'generate' })}
+          title={`Generate a part that follows the chord lane (${OPEN_GENERATE.label})`}
+        >
+          🎲 Generate…
+        </button>
+        {generateOpen && track && <GeneratePopover track={track} onClose={() => s.set({ popover: null })} />}
+      </span>
       <span className="anchor">
         <button disabled={!track || track.mode === 'code'} onClick={() => setEuclidOpen(!euclidOpen)} title={`Write a Euclidean rhythm (${OPEN_EUCLID.label})`}>
           Euclid…
