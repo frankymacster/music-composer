@@ -63,11 +63,13 @@ export const SNAPS: { label: string; ticks: number }[] = [
   { label: '1 bar', ticks: 0 },
   { label: '1/2', ticks: TPW / 2 },
   { label: '1/4', ticks: TPW / 4 },
+  { label: '1/4T', ticks: TPW / 6 },
   { label: '1/8', ticks: TPW / 8 },
   { label: '1/8T', ticks: TPW / 12 },
   { label: '1/16', ticks: TPW / 16 },
   { label: '1/16T', ticks: TPW / 24 },
   { label: '1/32', ticks: TPW / 32 },
+  { label: '1/32T', ticks: TPW / 48 },
   { label: 'Off', ticks: 1 },
 ];
 

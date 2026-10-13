@@ -342,7 +342,6 @@ button.icon {
 .fit-btn {
   position: absolute;
   right: 8px;
-  bottom: 90px;
   font-size: 11px;
   opacity: 0.75;
 }
@@ -731,4 +730,75 @@ button.mini {
 .popover .error {
   color: var(--red);
   font-size: 12px;
+}
+
+.vel-toggle {
+  position: absolute;
+  left: 4px;
+  padding: 0 6px;
+  font-size: 10px;
+  line-height: 16px;
+  border: none;
+  background: none;
+  color: var(--muted);
+}
+.vel-toggle:hover {
+  color: var(--text);
+  background: var(--panel-2);
+}
+
+.overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  background: rgba(0, 0, 0, 0.55);
+  display: grid;
+  place-items: center;
+  padding: 16px;
+}
+.shortcuts {
+  background: var(--panel);
+  border: 1px solid #3a3e46;
+  border-radius: 8px;
+  padding: 16px 20px;
+  max-width: 900px;
+  max-height: 90vh;
+  overflow: auto;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.6);
+}
+.shortcuts-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  align-items: baseline;
+  margin-bottom: 10px;
+}
+.shortcuts-head .hint {
+  color: var(--muted);
+  font-size: 12px;
+}
+.shortcuts-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 14px 24px;
+}
+.shortcuts h4 {
+  margin: 0 0 6px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+.sc {
+  display: grid;
+  grid-template-columns: 110px 1fr;
+  gap: 8px;
+  padding: 2px 0;
+  font-size: 12px;
+}
+kbd {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  color: var(--accent);
+  white-space: nowrap;
 }

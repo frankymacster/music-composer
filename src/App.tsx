@@ -13,8 +13,13 @@ import type { Note } from './music/codegen';
 import { rowsFor } from './music/kit';
 import { scaleStep } from './music/transforms';
 import * as live from './live';
+import { CHORD_STAMPS, CYCLE_CHORD, OPEN_CHORDS, OPEN_EUCLID, TRANSFORMS, gridStep, matches, toggleTriplet } from './commands';
+import { TPW } from './music/time';
+import { ShortcutsOverlay } from './components/ShortcutsOverlay';
 
 let clipboard: Note[] = [];
+/** Snap to restore when `\` turns snapping back on. */
+let lastSnap = TPW / 16;
 
 function handleKey(e: KeyboardEvent) {
   const target = e.target as HTMLElement;
@@ -24,6 +29,34 @@ function handleKey(e: KeyboardEvent) {
   const track = selectedTrack(s);
   const mod = e.metaKey || e.ctrlKey;
   const key = e.key.toLowerCase();
+
+  if (e.key === '?') {
+    s.set({ showShortcuts: !s.showShortcuts });
+    return;
+  }
+  if (key === 'escape' && (s.showShortcuts || s.popover)) {
+    s.set({ showShortcuts: false, popover: null });
+    return;
+  }
+  const plain = !mod && !e.altKey;
+  if (plain && (e.key === ',' || e.key === '.')) {
+    s.set({ snap: gridStep(s.snap, e.key === ',') });
+    return;
+  }
+  if (plain && e.key === '/') {
+    s.set({ snap: toggleTriplet(s.snap === 1 ? lastSnap : s.snap) });
+    return;
+  }
+  if (plain && e.key === '\\') {
+    if (s.snap !== 1) lastSnap = s.snap;
+    s.set({ snap: s.snap === 1 ? lastSnap : 1 });
+    return;
+  }
+  if (matches(e, CYCLE_CHORD)) {
+    e.preventDefault();
+    s.set({ chordStamp: CHORD_STAMPS[(CHORD_STAMPS.indexOf(s.chordStamp) + 1) % CHORD_STAMPS.length] });
+    return;
+  }
 
   if (key === 'm' && !mod && !e.altKey) {
     live.releaseAll();
@@ -54,6 +87,45 @@ function handleKey(e: KeyboardEvent) {
   if (!track || track.mode !== 'grid') return;
   const sel = track.notes.filter((n) => s.selection.has(n.id));
   const others = track.notes.filter((n) => !s.selection.has(n.id));
+
+  if (matches(e, OPEN_CHORDS) && track.kind === 'notes') {
+    e.preventDefault();
+    s.set({ popover: s.popover === 'chords' ? null : 'chords' });
+    return;
+  }
+  if (matches(e, OPEN_EUCLID)) {
+    e.preventDefault();
+    s.set({ popover: s.popover === 'euclid' ? null : 'euclid' });
+    return;
+  }
+  const transform = TRANSFORMS.find((t) => matches(e, t.combo));
+  if (transform) {
+    e.preventDefault();
+    s.transformNotes(track.id, (notes) => transform.run(notes, s.snap));
+    return;
+  }
+  const mapSel = (fn: (n: Note) => Note) => s.setNotes(track.id, track.notes.map((n) => (s.selection.has(n.id) ? fn(n) : n)));
+  if (e.altKey && !mod && (key === 'arrowup' || key === 'arrowdown') && sel.length) {
+    e.preventDefault();
+    const d = key === 'arrowup' ? 0.1 : -0.1;
+    mapSel((n) => ({ ...n, vel: Math.round(Math.max(0.01, Math.min(1, n.vel + d)) * 100) / 100 }));
+    return;
+  }
+  if (e.altKey && !mod && (key === 'arrowleft' || key === 'arrowright') && sel.length) {
+    e.preventDefault();
+    const d = (key === 'arrowleft' ? -1 : 1) * (TPW / 128);
+    if (sel.some((n) => n.start + d < 0)) return;
+    mapSel((n) => ({ ...n, start: n.start + d }));
+    return;
+  }
+  if (e.shiftKey && !mod && (key === 'arrowleft' || key === 'arrowright') && sel.length) {
+    e.preventDefault();
+    const { bars } = editInfo(s);
+    const step = s.snap === 1 ? TPW / 16 : snapLength(s.snap, bars, sel[0].start);
+    const d = key === 'arrowleft' ? -step : step;
+    mapSel((n) => ({ ...n, dur: Math.max(step, n.dur + d) }));
+    return;
+  }
 
   if (mod && key === 'a') {
     e.preventDefault();
@@ -134,6 +206,7 @@ export function App() {
   return (
     <div className="app">
       <Transport />
+      <ShortcutsOverlay />
       <div className="main">
         {tracks.collapsed ? (
           <CollapsedBar label="Tracks" side="left" onExpand={() => setTracks({ collapsed: false })} />

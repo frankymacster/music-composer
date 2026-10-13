@@ -58,6 +58,19 @@ Web MIDI needs Chrome, Edge or Firefox (not Safari).
 
 ## Controls
 
+Press **?** in the app for the full shortcut list. Highlights for drawing and transforms:
+
+| | |
+|---|---|
+| `,` / `.` · `/` · `\` | finer / coarser grid · triplet ↔ straight · snap on/off |
+| `⌥C` | cycle chord stamp (off → triad → 7th → sus4) |
+| `⇧←/→` · `⌥↑/↓` · `⌥←/→` | note length ± grid · velocity ± 10% · nudge 1/128 |
+| `⌥R` `⌥I` `⌥D` `⌥⇧D` `⌥L` `⌥S` `⌥H` | reverse, invert, double / half speed, legato, strum, humanize |
+| `⌥A` `⌥⇧A` `⌥U` | arpeggiate ↑ ↓ ↕ |
+| `⌥K` · `⌥E` | Chords… · Euclid… |
+| click a piano key / lane name | select that whole row (⇧ adds, drag for several) — then ↑↓ / Delete |
+
+
 | | |
 |---|---|
 | Space | play / stop (from cursor) |

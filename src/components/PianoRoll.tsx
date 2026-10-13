@@ -13,7 +13,17 @@ import { play, playhead } from '../sync';
 
 const METER_H = 18;
 const RULER_H = 38;
-const VEL_H = 84;
+/** Velocity lane height when open, and when collapsed to its header. */
+const VEL_OPEN = 84;
+const VEL_CLOSED = 20;
+const VEL_KEY = 'music-composer:velocity-lane';
+const velocityOpen = () => {
+  try {
+    return localStorage.getItem(VEL_KEY) !== 'closed';
+  } catch {
+    return true;
+  }
+};
 const EDGE = 6;
 
 const PEN_W = 18;
@@ -67,6 +77,7 @@ interface View {
   saved: Record<TrackKind, { rowH: number; scrollY: number }>;
   fold: boolean;
   sectionId?: string;
+  velH: number;
 }
 
 type Drag =
@@ -75,7 +86,7 @@ type Drag =
   | { kind: 'marquee'; x0: number; y0: number; x1: number; y1: number; base: Set<string> }
   | { kind: 'vel'; origs: Note[]; y0: number }
   | { kind: 'loop'; bar0: number; moved: boolean }
-  | { kind: 'keys'; lastPitch: number }
+  | { kind: 'keys'; lastPitch: number; startRow: number; base: Set<string> }
   | { kind: 'paint'; pitch: number; last: number; free: boolean }
   | { kind: 'erase' }
   | { kind: 'velpaint'; lastX: number; lastY: number };
@@ -118,6 +129,7 @@ export function PianoRoll() {
     h: 0,
     lane: NOTES_LANE,
     fold: false,
+    velH: velocityOpen() ? VEL_OPEN : VEL_CLOSED,
     saved: { notes: { rowH: 14, scrollY: (127 - 76) * 14 }, kit: { rowH: 24, scrollY: 0 } },
   });
   const drag = useRef<Drag | null>(null);
@@ -179,7 +191,7 @@ export function PianoRoll() {
       const drums = lane.kind === 'kit';
       const folded = !drums && lane.rows !== ALL_PITCHES;
       const { w, h, ppt, rowH, scrollTick, scrollY } = v;
-      const gridH = h - RULER_H - VEL_H;
+      const gridH = h - RULER_H - v.velH;
       const xOf = (t: number) => KEYS_W + (t - scrollTick) * ppt;
       const yOf = (p: number) => RULER_H + (lane.index.get(p) ?? -1000) * rowH - scrollY;
       const iTop = Math.max(0, Math.floor(scrollY / rowH));
@@ -334,29 +346,26 @@ export function PianoRoll() {
 
       // playhead
       ctx.fillStyle = heard !== undefined ? '#ffffff' : '#f5a524';
-      ctx.fillRect(Math.round(xOf(pos)), RULER_H, 1, gridH + VEL_H);
+      ctx.fillRect(Math.round(xOf(pos)), RULER_H, 1, gridH + v.velH);
       ctx.restore();
 
       // velocity lane
-      const vy = h - VEL_H;
+      const vy = h - v.velH;
       ctx.fillStyle = '#1a1b1f';
-      ctx.fillRect(0, vy, w, VEL_H);
+      ctx.fillRect(0, vy, w, v.velH);
       ctx.fillStyle = 'rgba(255,255,255,0.12)';
       ctx.fillRect(0, vy, w, 1);
-      ctx.fillStyle = '#7d838b';
-      ctx.font = '10px ui-sans-serif, system-ui';
-      ctx.fillText('Velocity', 8, vy + 16);
       ctx.save();
       ctx.beginPath();
-      ctx.rect(KEYS_W, vy + 1, w - KEYS_W, VEL_H - 1);
+      ctx.rect(KEYS_W, vy + 1, w - KEYS_W, v.velH - 1);
       ctx.clip();
-      for (const n of notes) {
+      for (const n of v.velH === VEL_OPEN ? notes : []) {
         const x = xOf(n.start);
         if (x < KEYS_W - 4 || x > w) continue;
-        const top = vy + 6 + (1 - n.vel) * (VEL_H - 12);
+        const top = vy + 6 + (1 - n.vel) * (v.velH - 12);
         ctx.fillStyle = s.selection.has(n.id) ? '#fff' : color;
         ctx.globalAlpha = ghost ? 0.4 : 0.9;
-        ctx.fillRect(x, top, 2, vy + VEL_H - 6 - top);
+        ctx.fillRect(x, top, 2, vy + v.velH - 6 - top);
         ctx.fillRect(x - 2, top - 1, 6, 3);
         ctx.globalAlpha = 1;
       }
@@ -521,6 +530,18 @@ export function PianoRoll() {
     };
 
     /** Adds a note in draw mode unless one already starts on this cell. */
+    /** Selects the notes in rows a..b (plus `base`) of the current clip. */
+    const selectRows = (track: Track, base: Set<string>, a: number, b: number) => {
+      if (track.mode !== 'grid') return;
+      const [lo, hi] = a <= b ? [a, b] : [b, a];
+      const sel = new Set(base);
+      for (const n of track.notes) {
+        const r = rowOf(n.pitch);
+        if (r >= lo && r <= hi) sel.add(n.id);
+      }
+      useStore.getState().select(sel);
+    };
+
     /** Pitches drawn for a click on `pitch`: a chord when the chord stamp is on. */
     const stamped = (track: Track, pitch: number) =>
       track.kind === 'notes' ? stampChord(pitch, useStore.getState().chordStamp, useStore.getState().project.scale) : [pitch];
@@ -540,8 +561,8 @@ export function PianoRoll() {
     const paintVelocity = (x0: number, y0: number, x1: number, y1: number) => {
       const { s, track } = ctxState();
       if (!track || track.mode !== 'grid') return;
-      const top = v.h - VEL_H + 6;
-      const velAt = (y: number) => Math.round(Math.max(0.01, Math.min(1, 1 - (y - top) / (VEL_H - 12))) * 100) / 100;
+      const top = v.h - v.velH + 6;
+      const velAt = (y: number) => Math.round(Math.max(0.01, Math.min(1, 1 - (y - top) / (v.velH - 12))) * 100) / 100;
       const [ax, ay, bx, by] = x0 <= x1 ? [x0, y0, x1, y1] : [x1, y1, x0, y0];
       let changed = false;
       const notes = track.notes.map((n) => {
@@ -574,7 +595,7 @@ export function PianoRoll() {
         v.scrollTick = Math.max(0, v.scrollTick + dx / v.ppt);
         v.scrollY += dy;
       }
-      const maxY = Math.max(0, v.lane.rows.length * v.rowH - (v.h - RULER_H - VEL_H));
+      const maxY = Math.max(0, v.lane.rows.length * v.rowH - (v.h - RULER_H - v.velH));
       v.scrollY = Math.max(0, Math.min(maxY, v.scrollY));
     };
 
@@ -586,7 +607,7 @@ export function PianoRoll() {
       setMeterEdit(null);
       setLaneEdit(null);
       canvas.setPointerCapture(e.pointerId);
-      const gridBottom = v.h - VEL_H;
+      const gridBottom = v.h - v.velH;
 
       if (y < RULER_H) {
         if (x < kw()) return;
@@ -608,7 +629,10 @@ export function PianoRoll() {
           return;
         }
         preview(track, p);
-        drag.current = { kind: 'keys', lastPitch: p };
+        // clicking a key selects every note in its row (⇧ adds to the selection); dragging extends over rows
+        const base = e.shiftKey ? new Set(s.selection) : new Set<string>();
+        drag.current = { kind: 'keys', lastPitch: p, startRow: rowAt(y), base };
+        selectRows(track, base, rowAt(y), rowAt(y));
         return;
       }
 
@@ -616,6 +640,7 @@ export function PianoRoll() {
       const notes = track.notes;
 
       if (y >= gridBottom) {
+        if (v.velH !== VEL_OPEN) return;
         if (s.draw || e.altKey) {
           s.checkpoint();
           drag.current = { kind: 'velpaint', lastX: x, lastY: y };
@@ -711,7 +736,7 @@ export function PianoRoll() {
       const { s, track, bars } = ctxState();
       if (!d) {
         if (!track) return;
-        const hit = y > RULER_H && y < v.h - VEL_H && x > kw() && track.mode === 'grid' ? hitNote(x, y, track.notes) : undefined;
+        const hit = y > RULER_H && y < v.h - v.velH && x > kw() && track.mode === 'grid' ? hitNote(x, y, track.notes) : undefined;
         canvas.style.cursor = hit?.edge ? 'ew-resize' : hit ? (s.draw ? 'not-allowed' : 'grab') : s.draw && x > kw() ? 'crosshair' : 'default';
         return;
       }
@@ -721,6 +746,7 @@ export function PianoRoll() {
         if (p !== d.lastPitch) {
           d.lastPitch = p;
           preview(track, p);
+          selectRows(track, d.base, d.startRow, rowAt(y));
         }
         return;
       }
@@ -777,7 +803,7 @@ export function PianoRoll() {
         return;
       }
       if (d.kind === 'vel') {
-        const dv = (d.y0 - y) / (VEL_H - 12);
+        const dv = (d.y0 - y) / (v.velH - 12);
         const map = new Map(d.origs.map((n) => [n.id, Math.round(Math.max(0.01, Math.min(1, n.vel + dv)) * 100) / 100]));
         s.setNotes(track.id, track.notes.map((n) => (map.has(n.id) ? { ...n, vel: map.get(n.id)! } : n)), false);
         return;
@@ -849,6 +875,18 @@ export function PianoRoll() {
     };
   }, []);
 
+  const [velOpen, setVelOpen] = useState(view.current.velH === VEL_OPEN);
+  const toggleVelocity = () => {
+    const open = !velOpen;
+    setVelOpen(open);
+    view.current.velH = open ? VEL_OPEN : VEL_CLOSED;
+    try {
+      localStorage.setItem(VEL_KEY, open ? 'open' : 'closed');
+    } catch {
+      /* not persisted */
+    }
+  };
+
   const fit = () => {
     const v = view.current;
     const { length } = editInfo(useStore.getState());
@@ -859,7 +897,15 @@ export function PianoRoll() {
   return (
     <div className="roll">
       <canvas ref={canvasRef} />
-      <button className="fit-btn" onClick={fit} title="Zoom to fit song">
+      <button
+        className="vel-toggle"
+        style={{ bottom: (velOpen ? VEL_OPEN : VEL_CLOSED) - 19 }}
+        onClick={toggleVelocity}
+        title={velOpen ? 'Collapse the velocity lane' : 'Show the velocity lane'}
+      >
+        {velOpen ? '▾' : '▸'} Velocity
+      </button>
+      <button className="fit-btn" style={{ bottom: (velOpen ? VEL_OPEN : VEL_CLOSED) + 6 }} onClick={fit} title="Zoom to fit song">
         Fit
       </button>
       {meterEdit && <MeterPopover bar={meterEdit.bar} x={meterEdit.x} onClose={() => setMeterEdit(null)} />}

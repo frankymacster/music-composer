@@ -1,27 +1,11 @@
 import { useState } from 'react';
-import { useStore, selectedTrack, uid, type TrackView } from '../store';
-import { SNAPS, TPW } from '../music/time';
+import { useStore, selectedTrack, type TrackView } from '../store';
+import { SNAPS } from '../music/time';
 import { MODES, ROOTS } from '../music/scale';
-import { arpeggiate, humanize, invert, legato, reverse, stretch, strum, type ArpDirection } from '../music/transforms';
+import { TRANSFORMS, stepTicks, OPEN_CHORDS, OPEN_EUCLID, CYCLE_CHORD } from '../commands';
 import { laneLabel } from '../music/kit';
-import { pitchLabel, type Note } from '../music/codegen';
+import { pitchLabel } from '../music/codegen';
 import type { ChordStamp } from '../music/chords';
-
-const stepTicks = (snap: number) => (snap > 1 ? snap : TPW / 16);
-
-const TRANSFORMS: { label: string; run: (notes: Note[], snap: number) => Note[] }[] = [
-  { label: 'Reverse', run: (n) => reverse(n) },
-  { label: 'Invert', run: (n) => invert(n) },
-  { label: 'Double speed', run: (n) => stretch(n, 0.5) },
-  { label: 'Half speed', run: (n) => stretch(n, 2) },
-  { label: 'Legato', run: (n) => legato(n) },
-  { label: 'Strum', run: (n) => strum(n, TPW / 96) },
-  { label: 'Humanize', run: (n) => humanize(n, TPW / 128, 0.08) },
-  ...(['up', 'down', 'updown'] as ArpDirection[]).map((dir) => ({
-    label: `Arpeggiate ${dir === 'up' ? '↑' : dir === 'down' ? '↓' : '↕'}`,
-    run: (n: Note[], snap: number) => arpeggiate(n, stepTicks(snap), dir, uid),
-  })),
-];
 
 const CHORD_LENGTHS: { label: string; value: { bars: number } | { beats: number } }[] = [
   { label: '1 bar each', value: { bars: 1 } },
@@ -168,12 +152,14 @@ export function RollToolbar() {
   const track = selectedTrack(s);
   const scale = s.project.scale;
   const editable = track?.mode === 'grid';
-  const [euclidOpen, setEuclidOpen] = useState(false);
-  const [chordsOpen, setChordsOpen] = useState(false);
+  const euclidOpen = s.popover === 'euclid';
+  const chordsOpen = s.popover === 'chords';
+  const setEuclidOpen = (open: boolean) => s.set({ popover: open ? 'euclid' : null });
+  const setChordsOpen = (open: boolean) => s.set({ popover: open ? 'chords' : null });
 
   return (
     <div className="roll-toolbar">
-      <label>
+      <label title="Grid: , finer · . coarser · / triplet · \\ snap on/off">
         Snap
         <select value={s.snap} onChange={(e) => s.set({ snap: +e.target.value })}>
           {SNAPS.map((o) => (
@@ -216,7 +202,7 @@ export function RollToolbar() {
       </label>
       {track?.kind === 'notes' && (
         <>
-          <label title="Drawn notes become chords: diatonic when a Scale is set">
+          <label title={`Drawn notes become chords: diatonic when a Scale is set (${CYCLE_CHORD.label} cycles)`}>
             Chord
             <select value={s.chordStamp} onChange={(e) => s.set({ chordStamp: e.target.value as ChordStamp })}>
               <option value="off">off</option>
@@ -226,7 +212,7 @@ export function RollToolbar() {
             </select>
           </label>
           <span className="anchor">
-            <button disabled={track.mode === 'code'} onClick={() => setChordsOpen(!chordsOpen)} title="Write a chord progression into this section">
+            <button disabled={track.mode === 'code'} onClick={() => setChordsOpen(!chordsOpen)} title={`Write a chord progression into this section (${OPEN_CHORDS.label})`}>
               Chords…
             </button>
             {chordsOpen && <ChordsPopover track={track} onClose={() => setChordsOpen(false)} />}
@@ -260,12 +246,12 @@ export function RollToolbar() {
         <option value="">Transform…</option>
         {TRANSFORMS.map((t, i) => (
           <option key={t.label} value={i}>
-            {t.label}
+            {t.label}  {t.combo.label}
           </option>
         ))}
       </select>
       <span className="anchor">
-        <button disabled={!track || track.mode === 'code'} onClick={() => setEuclidOpen(!euclidOpen)} title="Write a Euclidean rhythm">
+        <button disabled={!track || track.mode === 'code'} onClick={() => setEuclidOpen(!euclidOpen)} title={`Write a Euclidean rhythm (${OPEN_EUCLID.label})`}>
           Euclid…
         </button>
         {euclidOpen && track && <EuclidPopover track={track} onClose={() => setEuclidOpen(false)} />}

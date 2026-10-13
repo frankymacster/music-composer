@@ -334,6 +334,9 @@ interface State {
   chordStamp: ChordStamp;
   /** Show other tracks' notes in the roll. */
   ghosts: boolean;
+  /** Open toolbar popover. */
+  popover: 'chords' | 'euclid' | null;
+  showShortcuts: boolean;
 
   checkpoint(): void;
   undo(): void;
@@ -449,6 +452,8 @@ export const useStore = create<State>((set, get) => {
     inputQuantize: false,
     chordStamp: 'off',
     ghosts: true,
+    popover: null,
+    showShortcuts: false,
 
     checkpoint: () => set({ past: [...get().past.slice(-199), get().project], future: [] }),
     undo: () => {
